@@ -6,7 +6,7 @@
  * `node:crypto` engine) live in `auditable-mcp-sdk/node`; the default L2 crypto engine is the
  * universal noble engine, also exported from `auditable-mcp-sdk/noble`.
  *
- * The `spec_version` implemented is `auditable-mcp/0.1`.
+ * The `spec_version` implemented is `auditable-mcp/0.1.1`.
  */
 
 export {
@@ -22,18 +22,25 @@ export { capabilitySatisfies, type NegotiationResult, negotiate } from './capabi
 export { type Clock, nowIso, SystemClock } from './clock';
 export type { EcdsaVerify, Ed25519Engine, Ed25519KeyPair } from './crypto/engine';
 export { computeRecordHash, GENESIS_HASH } from './hashing';
-export { AuditHost, type AuditHostOptions, type IntegrityAnomaly, type SignatureVerifier } from './host';
+export {
+  type AuditCapabilityInput,
+  AuditHost,
+  type AuditHostOptions,
+  type IntegrityAnomaly,
+  type SignatureVerifier,
+} from './host';
 export { InProcessTransport } from './in-process';
 export {
   BoundaryObserver,
-  EcdsaSignatureVerifier,
-  Ed25519SignatureVerifier,
   Ed25519Signer,
   type EgressObservation,
   generateToolKey,
   KeyRegistry,
+  KeyRegistryVerifier,
   type ReconcileAnomaly,
+  type RegisteredKey,
   reconcile,
+  SignatureAlgorithm,
   signaturePayload,
   signEvent,
   type ToolKey,
@@ -53,6 +60,7 @@ export {
   firstValidationError,
   Level,
   Outcome,
+  type RejectReason,
   type RejectResponse,
   rejectResponseSchema,
   SPEC_VERSION,
@@ -73,7 +81,7 @@ export {
 } from './session';
 export { InMemoryLedgerRepository, type LedgerRepository, RepositoryError } from './storage';
 export { type AuditEndpoint, type AuditTransport, accept, reject, unavailable } from './transport';
-export { type VerifyIssue, type VerifyReport, verifyLedger } from './verify';
+export { type VerifyIssue, type VerifyReport, verifyChain, verifyLedger } from './verify';
 export { type AuditSpec, withAudit } from './with-audit';
 
 export const VERSION = '0.1.0';

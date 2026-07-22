@@ -26,15 +26,15 @@ export function signaturePayload(event: Record<string, unknown>): Uint8Array {
   return new TextEncoder().encode(canonicalize(rest));
 }
 
-/** Return `event` stamped with `key_id`, `sequence`, and a base64 detached Ed25519 signature. */
+/** Return `event` stamped with `key_id`, `signer_seq`, and a base64 detached Ed25519 signature. */
 export function signEvent(
   event: Record<string, unknown>,
   keyId: string,
-  sequence: number,
+  signerSeq: number,
   privateKey: Uint8Array,
   engine: Ed25519Engine = nobleEd25519Engine,
 ): Record<string, unknown> {
-  const signed = { ...event, [fields.KEY_ID]: keyId, [fields.SEQUENCE]: sequence };
+  const signed = { ...event, [fields.KEY_ID]: keyId, [fields.SIGNER_SEQ]: signerSeq };
   const signature = bytesToBase64(engine.sign(signaturePayload(signed), privateKey));
   return { ...signed, [fields.SIGNATURE]: signature };
 }

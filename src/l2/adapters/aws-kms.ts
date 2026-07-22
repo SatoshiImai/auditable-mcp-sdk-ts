@@ -11,13 +11,14 @@
  * this small interface by the integrator.
  */
 
+import { p256 } from '@noble/curves/nist';
 import { sha256 } from '@noble/hashes/sha2';
 import { bytesToBase64 } from '../../crypto/base64';
 import * as fields from '../../fields';
 import type { EventSigner } from '../../session';
-import { KeyRegistry } from '../keys';
+import { KeyRegistry, SignatureAlgorithm } from '../keys';
 import { signaturePayload } from '../signing';
-import { EcdsaSignatureVerifier } from '../verification';
+import { KeyRegistryVerifier } from '../verification';
 
 // KMS asymmetric signing algorithm for an ECC_NIST_P256 key; the digest is SHA-256.
 const DEFAULT_SIGNING_ALGORITHM = 'ECDSA_SHA_256';
@@ -87,9 +88,9 @@ export class AwsKmsSigner implements EventSigner {
   }
 
   async sign(event: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const sequence = this.#nextSequence;
+    const signerSeq = this.#nextSequence;
     this.#nextSequence += 1;
-    const signed = { ...event, [fields.KEY_ID]: this.#eventKeyId, [fields.SEQUENCE]: sequence };
+    const signed = { ...event, [fields.KEY_ID]: this.#eventKeyId, [fields.SIGNER_SEQ]: signerSeq };
     const digest = sha256(signaturePayload(signed));
     const response = await this.#client.sign({
       KeyId: this.#kmsKeyId,
@@ -97,23 +98,24 @@ export class AwsKmsSigner implements EventSigner {
       MessageType: MESSAGE_TYPE_DIGEST,
       SigningAlgorithm: this.#signingAlgorithm,
     });
-    const signature = bytesToBase64(requireBytes(response.Signature, 'Signature'));
-    return { ...signed, [fields.SIGNATURE]: signature };
+    // KMS returns an ASN.1/DER signature; the wire form is the fixed 64-byte IEEE P1363 r||s (§5.1).
+    const raw = p256.Signature.fromBytes(requireBytes(response.Signature, 'Signature'), 'der').toBytes('compact');
+    return { ...signed, [fields.SIGNATURE]: bytesToBase64(raw) };
   }
 }
 
 /**
- * An `EcdsaSignatureVerifier` whose EC public keys are loaded from AWS KMS at onboarding.
+ * A `KeyRegistryVerifier` whose ECDSA P-256 public keys are loaded from AWS KMS at onboarding.
  *
  * Verification (local ECDSA against the cached keys) is inherited; the KMS-specific part is only
- * fetching the public keys via `kms:GetPublicKey`.
+ * fetching the public keys via `kms:GetPublicKey` and binding them as `ECDSA_P256_SHA256`.
  */
-export class AwsKmsVerifier extends EcdsaSignatureVerifier {
+export class AwsKmsVerifier extends KeyRegistryVerifier {
   /** Build a verifier by fetching each key's public half from KMS at onboarding. */
   static async fromKms(client: KmsClient, keyMap: Record<string, string>): Promise<AwsKmsVerifier> {
     const registry = new KeyRegistry();
     for (const [eventKeyId, kmsKeyId] of Object.entries(keyMap)) {
-      registry.register(eventKeyId, await loadKmsPublicKey(client, kmsKeyId));
+      registry.register(eventKeyId, await loadKmsPublicKey(client, kmsKeyId), SignatureAlgorithm.ECDSA_P256_SHA256);
     }
     return new AwsKmsVerifier(registry);
   }

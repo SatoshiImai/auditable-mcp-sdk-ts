@@ -38,7 +38,7 @@ describe('reconcile detects suppression by omission (§7.5)', () => {
     expect(anomalies).toHaveLength(0);
   });
 
-  it('does not flag a self-report the boundary did not observe (boundaries are not omniscient)', () => {
+  it('does not flag a self-report the boundary did not observe', () => {
     const anomalies = reconcile([egressRecord('call-1', 'api.example.com')], [], 'call-1');
     expect(anomalies).toHaveLength(0);
   });

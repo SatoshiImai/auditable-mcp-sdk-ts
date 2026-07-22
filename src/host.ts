@@ -8,16 +8,25 @@
  *
  * The host validates ledger-integrity requirements before sealing (§7.1); it never authorizes the
  * tool's domain action (§2). Under Level 2 it defers signature checking to an injected
- * `SignatureVerifier` (the concrete Ed25519 verifier lives in the `l2` layer), while sequence
- * tracking and anomaly flagging are host logic. A persistence failure fails closed with a retryable
- * `unavailable` (§7.1).
+ * `SignatureVerifier` (the concrete registry-backed verifier lives in the `l2` layer), while
+ * signer-sequence tracking and anomaly flagging are host logic. A persistence failure fails closed
+ * with a retryable `unavailable` (§7.1).
  */
 
 import { hasUnsafeNumber } from './canonical';
 import { type Clock, SystemClock } from './clock';
 import * as fields from './fields';
 import { Ledger, type SealedRecord } from './ledger';
-import { type AttemptResponse, type AuditCapability, firstValidationError, Level, Outcome } from './models';
+import {
+  type AttemptResponse,
+  type AuditCapability,
+  auditCapabilitySchema,
+  firstValidationError,
+  Level,
+  Outcome,
+  type RejectReason,
+  SPEC_VERSION,
+} from './models';
 import * as reasons from './reasons';
 import { type LedgerRepository, RepositoryError } from './storage/repository';
 import { type AuditEndpoint, accept, reject, unavailable } from './transport';
@@ -25,7 +34,7 @@ import { type AuditEndpoint, accept, reject, unavailable } from './transport';
 /** A detected integrity violation or inconsistency in the audit stream (flagged, not always fatal). */
 export interface IntegrityAnomaly {
   id: string;
-  kind: string;
+  kind: reasons.Tier1Code;
   detail: string;
 }
 
@@ -37,8 +46,8 @@ export interface IntegrityAnomaly {
  * KMS; a local verifier just resolves synchronously under the async signature.
  */
 export interface SignatureVerifier {
-  /** Return a reject reason (e.g. `unknown-key`, `signature-invalid`), or null if the signature verifies. */
-  verify(event: Record<string, unknown>): Promise<string | null>;
+  /** Return a Tier-1 reject reason (`unknown-key` / `signature-invalid`), or null if it verifies (§7.6). */
+  verify(event: Record<string, unknown>): Promise<RejectReason | null>;
 }
 
 /** Options for constructing an {@link AuditHost}. */
@@ -48,7 +57,8 @@ export interface AuditHostOptions {
   clock?: Clock;
 }
 
-const DEFAULT_CAPABILITY: AuditCapability = { level: Level.L1, attempt: 'request' };
+/** A partial host self-declaration: unset fields are filled from the SDK's own capability defaults. */
+export type AuditCapabilityInput = Partial<AuditCapability>;
 
 function eventId(event: Record<string, unknown>): string {
   const id = event[fields.ID];
@@ -80,12 +90,21 @@ export class AuditHost implements AuditEndpoint {
    *
    * @throws {Error} If the required level is Level 2 but no `verifier` was provided.
    */
-  constructor(partition: string, capability: AuditCapability = DEFAULT_CAPABILITY, options: AuditHostOptions = {}) {
-    if (capability.level === Level.L2 && options.verifier === undefined) {
+  constructor(partition: string, capability: AuditCapabilityInput = {}, options: AuditHostOptions = {}) {
+    // The host's own capability: complete the partial self-declaration with the SDK's explicit
+    // defaults, then parse. The schema itself is strict (all fields REQUIRED, §6.1), so a peer
+    // capability validated directly is rejected on any omission rather than defaulted.
+    const resolved = auditCapabilitySchema.parse({
+      spec_version: SPEC_VERSION,
+      level: Level.L1,
+      attempt: 'request',
+      ...capability,
+    });
+    if (resolved.level === Level.L2 && options.verifier === undefined) {
       throw new Error('an L2 host requires a SignatureVerifier');
     }
     this.#partition = partition;
-    this.#capability = capability;
+    this.#capability = resolved;
     this.#ledger = new Ledger(partition);
     this.#verifier = options.verifier;
     this.#repository = options.repository;
@@ -97,12 +116,12 @@ export class AuditHost implements AuditEndpoint {
    *
    * The chain state (next `seq`, tail link) and the L2 replay/sequence state are reconstructed from
    * the stored records, so post-restart appends link correctly and replays are still caught. Reject
-   * memory (`outcome-after-reject`) is not persisted, so an outcome for a pre-restart rejected id
-   * degrades to `outcome-without-attempt`.
+   * memory is not persisted, so an outcome for a pre-restart rejected id is still flagged
+   * `orphaned-outcome`, as a never-accepted one.
    */
   static async resume(
     partition: string,
-    capability: AuditCapability = DEFAULT_CAPABILITY,
+    capability: AuditCapabilityInput = {},
     options: AuditHostOptions & { repository: LedgerRepository },
   ): Promise<AuditHost> {
     const host = new AuditHost(partition, capability, options);
@@ -136,7 +155,7 @@ export class AuditHost implements AuditEndpoint {
     return this.#ledger.digest();
   }
 
-  #flag(id: string, kind: string, detail: string): void {
+  #flag(id: string, kind: reasons.Tier1Code, detail: string): void {
     this.#anomalies.push({ id, kind, detail });
   }
 
@@ -163,15 +182,15 @@ export class AuditHost implements AuditEndpoint {
    * Unsigned / unknown-key / forged / replayed records are rejected. A forward sequence gap is flagged
    * but not rejected — the missing event cannot be recovered (§7.4).
    */
-  async #checkL2(event: Record<string, unknown>): Promise<string | null> {
+  async #checkL2(event: Record<string, unknown>): Promise<RejectReason | null> {
     if (this.#capability.level !== Level.L2) {
       return null;
     }
     const keyId = event[fields.KEY_ID];
     const signature = event[fields.SIGNATURE];
-    const sequence = event[fields.SEQUENCE];
-    if (!signature || typeof keyId !== 'string' || typeof sequence !== 'number' || !Number.isInteger(sequence)) {
-      this.#flag(eventId(event), reasons.L2_UNSIGNED, 'L2 requires signature, key_id, and sequence');
+    const signerSeq = event[fields.SIGNER_SEQ];
+    if (!signature || typeof keyId !== 'string' || typeof signerSeq !== 'number' || !Number.isInteger(signerSeq)) {
+      this.#flag(eventId(event), reasons.L2_UNSIGNED, 'L2 requires signature, key_id, and signer_seq');
       return reasons.L2_UNSIGNED;
     }
     // A verifier is guaranteed present under L2 (enforced in the constructor).
@@ -180,32 +199,30 @@ export class AuditHost implements AuditEndpoint {
       this.#flag(eventId(event), reason, 'signature verification failed');
       return reason;
     }
-    // The first event from a key only establishes the baseline: with no prior observation there is
-    // nothing to have skipped, so neither replay nor gap applies (a tool's per-key start is arbitrary,
-    // and cross-partition interleaving makes it unknowable from one partition, §10.5).
+    // The first signer_seq from a key only establishes the baseline: with no prior observation there
+    // is nothing to have skipped, so neither replay nor gap applies (a tool's per-key start is
+    // arbitrary, and cross-partition interleaving makes it unknowable from one partition, §7.4, §10.5).
     const last = this.#lastSeqByKey.get(keyId);
     if (last !== undefined) {
-      if (sequence <= last) {
-        this.#flag(eventId(event), reasons.SIGNER_SEQUENCE_REPLAY, `sequence ${sequence} <= last ${last}`);
-        return reasons.SIGNER_SEQUENCE_REPLAY;
+      // A replay (signer_seq at or below the last accepted) is a hard reject (§7.6).
+      if (signerSeq <= last) {
+        this.#flag(eventId(event), reasons.REPLAY_DETECTED, `signer_seq ${signerSeq} <= last ${last}`);
+        return reasons.REPLAY_DETECTED;
       }
-      if (sequence > last + 1) {
-        this.#flag(
-          eventId(event),
-          reasons.SIGNER_SEQUENCE_GAP,
-          `expected ${last + 1}, got ${sequence} (suppressed event)`,
-        );
+      // A forward gap is flagged as an advisory anomaly, not rejected (the missing event is lost, §7.4).
+      if (signerSeq > last + 1) {
+        this.#flag(eventId(event), reasons.SIGNER_SEQ_GAP, `expected ${last + 1}, got ${signerSeq} (suppressed event)`);
       }
     }
     return null;
   }
 
-  /** Advance the per-key sequence tracker after a record is sealed (follows accepted, not seen). */
+  /** Advance the per-key signer_seq tracker after a record is sealed (follows accepted, not seen). */
   #advanceSeq(event: Record<string, unknown>): void {
     const keyId = event[fields.KEY_ID];
-    const sequence = event[fields.SEQUENCE];
-    if (typeof keyId === 'string' && typeof sequence === 'number' && Number.isInteger(sequence)) {
-      this.#lastSeqByKey.set(keyId, sequence);
+    const signerSeq = event[fields.SIGNER_SEQ];
+    if (typeof keyId === 'string' && typeof signerSeq === 'number' && Number.isInteger(signerSeq)) {
+      this.#lastSeqByKey.set(keyId, signerSeq);
     }
   }
 
@@ -217,13 +234,14 @@ export class AuditHost implements AuditEndpoint {
       return reject(reasons.SCHEMA_INVALID);
     }
     if (event[fields.OUTCOME] !== Outcome.ATTEMPTED) {
+      // Tier-2 (an attempt must carry outcome=attempted) rolls up to schema-invalid (§7.6).
       this.#flag(eventId(event), reasons.SCHEMA_INVALID, 'an attempt must carry outcome=attempted');
-      return reject(reasons.ATTEMPT_MUST_BE_ATTEMPTED);
+      return reject(reasons.SCHEMA_INVALID);
     }
-    // Not canonicalizable (§8.1): reject gracefully instead of throwing at seal time.
+    // Not canonicalizable (§8.1): reject gracefully instead of throwing at seal time (rolls up to schema-invalid).
     if (hasUnsafeNumber(event)) {
-      this.#flag(eventId(event), reasons.NUMERIC_DOMAIN, 'a numeric value is not canonicalizable (§8.1)');
-      return reject(reasons.NUMERIC_DOMAIN);
+      this.#flag(eventId(event), reasons.SCHEMA_INVALID, 'a numeric value is not canonicalizable (§8.1)');
+      return reject(reasons.SCHEMA_INVALID);
     }
     const l2Reason = await this.#checkL2(event);
     if (l2Reason !== null) {
@@ -232,18 +250,18 @@ export class AuditHost implements AuditEndpoint {
     }
     if (!this.persistenceAvailable) {
       // Fail closed: the tool must not act on an unpersisted record.
-      return unavailable(reasons.PERSISTENCE_FAILURE);
+      return unavailable();
     }
     const id = eventId(event);
     if (this.#acceptedAttempts.has(id)) {
       this.#rejectedIds.add(id);
-      this.#flag(id, reasons.ATTEMPT_REPLAY, 'duplicate attempt id');
-      return reject(reasons.ATTEMPT_REPLAY);
+      this.#flag(id, reasons.REPLAY_DETECTED, 'duplicate attempt id');
+      return reject(reasons.REPLAY_DETECTED);
     }
     const sealed = await this.#seal(event, this.#clock.now());
     if (sealed === null) {
       // Persistence failed after validation: fail closed so the tool retries (not accepted).
-      return unavailable(reasons.PERSISTENCE_FAILURE);
+      return unavailable();
     }
     this.#acceptedAttempts.add(id);
     this.#advanceSeq(event);
@@ -259,11 +277,17 @@ export class AuditHost implements AuditEndpoint {
       return;
     }
     if (hasUnsafeNumber(event)) {
-      this.#flag(eventId(event), reasons.NUMERIC_DOMAIN, 'a numeric value is not canonicalizable (§8.1)');
+      this.#flag(eventId(event), reasons.SCHEMA_INVALID, 'a numeric value is not canonicalizable (§8.1)');
       return;
     }
     const id = eventId(event);
     const outcome = event[fields.OUTCOME];
+    // §6: an `attempted` outcome on the audit/outcome channel is invalid; drop and flag it rather than
+    // sealing a second attempt record for the id (§7.1 uniqueness).
+    if (outcome === Outcome.ATTEMPTED) {
+      this.#flag(id, reasons.SCHEMA_INVALID, 'attempted outcome on the audit/outcome channel (§6)');
+      return;
+    }
     // §10.4: a fail-closed aborted outcome for a never-accepted attempt is the honest refused-action
     // signal, not a tampering anomaly. Exempt it before #checkL2 so a fresh signer sequence that
     // outran the unsealed attempt is not flagged as a suppression gap.
@@ -278,16 +302,23 @@ export class AuditHost implements AuditEndpoint {
       // response channel, so a persistence failure is flagged, not returned.
       const sealed = await this.#seal(event, this.#clock.now());
       if (sealed === null) {
-        this.#flag(id, reasons.PERSISTENCE_FAILURE, 'could not persist outcome');
+        // A lost outcome is a completeness gap (§10.8), not a ledger integrity anomaly, and
+        // `internal-error` is not a Tier-1 anomaly kind (§7.6): log it locally rather than flag the
+        // anomaly set with an out-of-space code.
+        console.error(
+          `auditable-mcp: could not persist correlated outcome id=${id}; outcome lost (completeness gap, §10.8)`,
+        );
         return;
       }
       this.#advanceSeq(event);
       return;
     }
+    // Both never-accepted and post-reject orphans roll up to the orphaned-outcome anomaly (§7.6); the
+    // finer distinction is a Tier-2 local detail.
     if (this.#rejectedIds.has(id)) {
-      this.#flag(id, reasons.OUTCOME_AFTER_REJECT, `outcome=${String(outcome)} for rejected id`);
+      this.#flag(id, reasons.ORPHANED_OUTCOME, `outcome=${String(outcome)} for rejected id`);
     } else {
-      this.#flag(id, reasons.OUTCOME_WITHOUT_ATTEMPT, `outcome=${String(outcome)} without accepted attempt`);
+      this.#flag(id, reasons.ORPHANED_OUTCOME, `outcome=${String(outcome)} without accepted attempt`);
     }
   }
 }

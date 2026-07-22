@@ -12,15 +12,15 @@
  *
  * String fields carry the schema's `pattern` verbatim rather than Zod's built-in `uuid()` / ISO
  * helpers, which accept a different (looser) set: the value must pass through untouched and match the
- * contract exactly so the canonical bytes survive for hashing. `tests/conformance` guards these
- * copies against schema drift.
+ * contract exactly so the canonical bytes survive for hashing. Every code-valued field is pinned to
+ * the §7.6 Tier-1 vocabulary. `tests/conformance` guards these copies against schema drift.
  */
 
 import { z } from 'zod';
 import { MAX_SAFE_INTEGER } from './canonical';
 
 // The only spec version defined by this contract; a mismatch is a hard validation error.
-export const SPEC_VERSION = 'auditable-mcp/0.1' as const;
+export const SPEC_VERSION = 'auditable-mcp/0.1.1' as const;
 
 // Patterns copied verbatim from the normative JSON Schema (spec/schema/).
 export const UUID_PATTERN =
@@ -29,11 +29,14 @@ export const UUID_PATTERN =
 export const DATETIME_PATTERN = String.raw`^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$`;
 export const CHAIN_HASH_PATTERN = '^[0-9a-f]{64}$';
 export const CONTEXT_HASH_PATTERN = '^sha256:[0-9a-f]{64}$';
+// Standard base64 with optional padding (§5.1: base64url is forbidden on the wire).
+export const SIGNATURE_PATTERN = '^[A-Za-z0-9+/]+={0,2}$';
 
 const uuidRegex = new RegExp(UUID_PATTERN);
 const datetimeRegex = new RegExp(DATETIME_PATTERN);
 const chainHashRegex = new RegExp(CHAIN_HASH_PATTERN);
 const contextHashRegex = new RegExp(CONTEXT_HASH_PATTERN);
+const signatureRegex = new RegExp(SIGNATURE_PATTERN);
 
 /** The lifecycle state an event records (§7.2). */
 export const Outcome = {
@@ -59,6 +62,19 @@ export const Status = {
 } as const;
 export type Status = (typeof Status)[keyof typeof Status];
 
+// The §7.6 Tier-1 code enums pinned onto the wire contracts.
+const abortReasonSchema = z.enum(['hash-mismatch', 'host-rejected', 'host-unavailable']);
+const rejectReasonSchema = z.enum([
+  'schema-invalid',
+  'replay-detected',
+  'signature-invalid',
+  'l2-unsigned',
+  'unknown-key',
+]);
+
+/** A Tier-1 host reject reason (§7.6) — the codes a host may return on `status: "reject"`. */
+export type RejectReason = z.infer<typeof rejectReasonSchema>;
+
 /** The domain target of an operation (§4). */
 export const targetResourceSchema = z.strictObject({
   kind: z.string().min(1),
@@ -70,33 +86,43 @@ export type TargetResource = z.infer<typeof targetResourceSchema>;
 /**
  * One audit record describing one internal operation (§4).
  *
- * The Level-2 fields (`sequence`, `key_id`, `signature`) are optional so a single schema serves both
- * levels; the signing layer populates them.
+ * The Level-2 fields (`signer_seq`, `key_id`, `signature`) are optional so a single schema serves
+ * both levels; the signing layer populates them. `reason` is pinned to the Tier-1 abort codes and is
+ * required exactly when `outcome` is `aborted` (§7.6, §7.2).
  */
-export const auditEventSchema = z.strictObject({
-  id: z.string().regex(uuidRegex),
-  spec_version: z.literal(SPEC_VERSION),
-  ts: z.string().regex(datetimeRegex),
-  call_id: z.string().min(1),
-  traceparent: z.string().optional(),
-  action_type: z.string().min(1),
-  mutates: z.boolean(),
-  egress: z.boolean(),
-  target_resource: targetResourceSchema,
-  outcome: z.enum(Outcome),
-  reason: z.string().optional(),
-  action_context: z.record(z.string(), z.unknown()).optional(),
-  action_context_hash: z.string().regex(contextHashRegex).optional(),
-  sequence: z.int().min(0).max(MAX_SAFE_INTEGER).optional(),
-  key_id: z.string().optional(),
-  signature: z.string().optional(),
-});
+export const auditEventSchema = z
+  .strictObject({
+    id: z.string().regex(uuidRegex),
+    spec_version: z.literal(SPEC_VERSION),
+    ts: z.string().regex(datetimeRegex),
+    call_id: z.string().min(1),
+    traceparent: z.string().optional(),
+    action_type: z.string().min(1),
+    mutates: z.boolean(),
+    egress: z.boolean(),
+    target_resource: targetResourceSchema,
+    outcome: z.enum(Outcome),
+    reason: abortReasonSchema.optional(),
+    action_context: z.record(z.string(), z.unknown()).optional(),
+    action_context_hash: z.string().regex(contextHashRegex).optional(),
+    signer_seq: z.int().min(0).max(MAX_SAFE_INTEGER).optional(),
+    key_id: z.string().min(1).optional(),
+    signature: z.string().regex(signatureRegex).optional(),
+  })
+  .refine((event) => event.outcome !== Outcome.ABORTED || event.reason !== undefined, {
+    message: 'an aborted outcome requires a reason',
+    path: ['reason'],
+  });
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 
-/** An audit capability: a requirement when host-declared, a supported level when tool-declared (§6.1). */
+/** An audit capability exchanged during negotiation: the version, level, and attempt mode (§6.1). */
 export const auditCapabilitySchema = z.strictObject({
-  level: z.enum(Level).default(Level.L1),
-  attempt: z.literal('request').default('request'),
+  // All three REQUIRED (§6.1, normative audit-capability.schema.json): a peer that omits any field is
+  // rejected, not silently coerced, so version negotiation cannot be bypassed by omission. The host
+  // completes its own partial self-declaration with explicit SDK defaults before parsing (host.ts).
+  spec_version: z.string().min(1),
+  level: z.enum(Level),
+  attempt: z.literal('request'),
 });
 export type AuditCapability = z.infer<typeof auditCapabilitySchema>;
 
@@ -110,17 +136,17 @@ export const acceptResponseSchema = z.strictObject({
 });
 export type AcceptResponse = z.infer<typeof acceptResponseSchema>;
 
-/** A refused attempt: ledger integrity could not be guaranteed (§7.1). */
+/** A refused attempt: ledger integrity could not be guaranteed (§7.1). `reason` is a Tier-1 code. */
 export const rejectResponseSchema = z.strictObject({
   status: z.literal(Status.REJECT),
-  reason: z.string(),
+  reason: rejectReasonSchema,
 });
 export type RejectResponse = z.infer<typeof rejectResponseSchema>;
 
-/** A transient persistence failure: fail closed and retry (§7.1). `retryable` is always true. */
+/** A transient host-internal failure: fail closed and retry (§7.1). `retryable` is always true. */
 export const unavailableResponseSchema = z.strictObject({
   status: z.literal(Status.UNAVAILABLE),
-  reason: z.string(),
+  reason: z.literal('internal-error'),
   retryable: z.literal(true),
 });
 export type UnavailableResponse = z.infer<typeof unavailableResponseSchema>;

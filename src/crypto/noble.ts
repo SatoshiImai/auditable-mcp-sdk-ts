@@ -26,9 +26,9 @@ export const nobleEd25519Engine: Ed25519Engine = {
 };
 
 /** The universal ECDSA (P-256 / SHA-256) verify primitive used by default for KMS/HSM keys. */
-export const nobleEcdsaVerify: EcdsaVerify = (payload, signatureDer, publicKeyPoint) => {
+export const nobleEcdsaVerify: EcdsaVerify = (payload, signatureRaw, publicKeyPoint) => {
   const digest = sha256(payload);
-  const signature = p256.Signature.fromBytes(signatureDer, 'der').toBytes('compact');
-  // lowS:false — AWS KMS ECDSA_SHA_256 may emit a high-S signature; it still authenticates.
-  return p256.verify(signature, digest, publicKeyPoint, { lowS: false });
+  // The wire signature is the fixed 64-byte IEEE P1363 r||s form (§5.1), which noble accepts directly.
+  // lowS:false — a KMS ECDSA_SHA_256 signature may be high-S; it still authenticates.
+  return p256.verify(signatureRaw, digest, publicKeyPoint, { lowS: false });
 };

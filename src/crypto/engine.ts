@@ -25,7 +25,8 @@ export interface Ed25519Engine {
 }
 
 /**
- * Verify a DER-encoded ECDSA (P-256 / SHA-256) signature over `payload` against a raw uncompressed EC
- * point. This is the KMS/HSM verification primitive; signing there happens remotely in the adapter.
+ * Verify an ECDSA (P-256 / SHA-256) signature over `payload` against a raw uncompressed EC point. The
+ * signature is the fixed-length IEEE P1363 `r || s` form (§5.1), not DER. This is the KMS/HSM
+ * verification primitive; signing there happens remotely in the adapter.
  */
-export type EcdsaVerify = (payload: Uint8Array, signatureDer: Uint8Array, publicKeyPoint: Uint8Array) => boolean;
+export type EcdsaVerify = (payload: Uint8Array, signatureRaw: Uint8Array, publicKeyPoint: Uint8Array) => boolean;

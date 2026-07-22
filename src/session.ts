@@ -24,6 +24,7 @@ import { type Clock, nowIso } from './clock';
 import { computeRecordHash } from './hashing';
 import {
   type AcceptResponse,
+  type AttemptResponse,
   auditEventSchema,
   Outcome,
   SPEC_VERSION,
@@ -150,7 +151,20 @@ export class AmcpSession {
     const action = new AuditedAction(this, this._deps.newId(), actionType, target, options);
 
     const attempt = await action._build(Outcome.ATTEMPTED);
-    const response = await this._transport.sendAttempt(attempt);
+    let response: AttemptResponse;
+    try {
+      response = await this._transport.sendAttempt(attempt);
+    } catch {
+      // §6/§11.3: a JSON-RPC transport fault (vs an `unavailable` result) is handled exactly as
+      // `unavailable` — fail closed. Emit a fail-closed aborted outcome for observability, best-effort
+      // so a broken transport cannot mask the abort itself.
+      try {
+        await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HOST_UNAVAILABLE));
+      } catch (outcomeError) {
+        console.error('auditable-mcp: failed to emit aborted outcome after a transport fault', outcomeError);
+      }
+      throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNAVAILABLE);
+    }
 
     if (response.status !== Status.ACCEPT) {
       // reject (invalid) or unavailable (not persisted): do not act; signal aborted (§11.3).
@@ -186,7 +200,6 @@ export class AuditedAction implements AsyncDisposable {
   readonly #options: ActionOptions;
   readonly #commitHash: string | undefined;
   #outcome: 'success' | 'failed' | undefined;
-  #failReason: string | undefined;
   #finished = false;
 
   /** @internal Constructed by {@link AmcpSession.action}; not part of the public API. */
@@ -206,10 +219,14 @@ export class AuditedAction implements AsyncDisposable {
     }
   }
 
-  /** Mark the operation failed, optionally with a reason (§7.2). */
-  failed(reason?: string): void {
+  /**
+   * Mark the operation failed (§7.2).
+   *
+   * A `failed` outcome carries no wire `reason`: the event `reason` field is pinned to the Tier-1
+   * abort codes (§7.6), and a domain-failure cause is a Tier-2 local diagnostic that is not sealed.
+   */
+  failed(): void {
     this.#outcome = 'failed';
-    this.#failReason = reason;
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -218,8 +235,7 @@ export class AuditedAction implements AsyncDisposable {
     }
     this.#finished = true;
     const outcome = this.#outcome === 'success' ? Outcome.SUCCESS : Outcome.FAILED;
-    const reason = this.#outcome === 'success' ? undefined : this.#failReason;
-    await this.#session._transport.sendOutcome(await this._build(outcome, reason));
+    await this.#session._transport.sendOutcome(await this._build(outcome));
   }
 
   /** @internal Build and stamp the wire event for `outcome`, reusing the shared correlation id. */

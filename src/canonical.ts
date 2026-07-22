@@ -19,7 +19,7 @@ import jcsCanonicalize from 'canonicalize';
 // safe-integer range or canonicalization diverges across runtimes. Equal to 2^53 - 1.
 export const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 
-// The action_context_hash commitment (§4.3) names its algorithm; only SHA-256 is defined in v0.1.
+// The action_context_hash commitment (§4.3) names its algorithm; only SHA-256 is defined in this version.
 export const CONTEXT_HASH_PREFIX = 'sha256:';
 
 /** A value cannot be canonicalized under the §8.1 numeric domain. */

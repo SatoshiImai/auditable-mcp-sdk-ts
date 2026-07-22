@@ -40,6 +40,15 @@ export interface ChainVector {
   digest?: string;
 }
 
+export interface ErrorCase {
+  name: string;
+  channel: 'attempt' | 'outcome';
+  event: Record<string, unknown>;
+  expect: { status?: string; reason?: string; sealed?: boolean; anomaly_kind?: string };
+}
+
 export const canonicalizationVectors = load<CanonicalizationVector[]>('canonicalization.json');
 export const eventVectors = load<EventVector[]>('events.json');
 export const chainVector = load<ChainVector>('chain.json');
+export const chainSignedVector = load<ChainVector>('chain-signed.json');
+export const errorCases = load<ErrorCase[]>('error-cases.json');

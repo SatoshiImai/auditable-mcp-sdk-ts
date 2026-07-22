@@ -1,7 +1,7 @@
 # Auditable MCP SDK (TypeScript)
 
 A protocol machine for [Auditable MCP](https://github.com/SatoshiImai/mcp-audit-extension)
-(`auditable-mcp/0.1`). It lets an MCP tool self-attest its internal domain operations (SQL queries,
+(`auditable-mcp/0.1.1`). It lets an MCP tool self-attest its internal domain operations (SQL queries,
 downstream API calls) and lets a host seal those attestations into a tamper-evident, hash-chained
 ledger.
 
@@ -34,7 +34,7 @@ What it does not do (your concern, via adapters):
 
 ## Status
 
-Alpha, tracking `auditable-mcp/0.1`. The public API is unstable until v0.1 is tagged.
+Alpha, tracking `auditable-mcp/0.1.1`. The public API is unstable until v0.1 is tagged.
 
 ## Install
 
@@ -145,28 +145,31 @@ Local keys are for development and tests. See the next section for production.
 import {
   AmcpSession,
   AuditHost,
-  Ed25519SignatureVerifier,
   Ed25519Signer,
+  generateToolKey,
   InProcessTransport,
   KeyRegistry,
-  generateToolKey,
+  KeyRegistryVerifier,
 } from 'auditable-mcp-sdk';
 
 const toolKey = generateToolKey('tool-1');
 
 const registry = new KeyRegistry(); // the host's out-of-band trust anchor
-registry.registerToolKey(toolKey);
+registry.registerToolKey(toolKey); // binds the key_id to Ed25519 (§5.1)
 
-const host = new AuditHost('tenant-a', { level: 'L2', attempt: 'request' }, {
-  verifier: new Ed25519SignatureVerifier(registry),
+const host = new AuditHost('tenant-a', { level: 'L2' }, {
+  verifier: new KeyRegistryVerifier(registry),
 });
 const session = new AmcpSession(new InProcessTransport(host), 'call-1', {
   signer: Ed25519Signer.fromToolKey(toolKey),
 });
 ```
 
-The default crypto engine is universal (noble). To use the platform crypto instead, pass the Node
-engine: `Ed25519Signer.fromToolKey(toolKey, { engine: nodeEd25519Engine })` from `auditable-mcp-sdk/node`.
+One `KeyRegistryVerifier` handles a heterogeneous fleet: the algorithm (`Ed25519` or
+`ECDSA_P256_SHA256`) is bound to each `key_id` in the registry (§5.1), not carried in the event. The
+default crypto engine is universal (noble); pass the Node engine
+(`Ed25519Signer.fromToolKey(toolKey, { engine: nodeEd25519Engine })` from `auditable-mcp-sdk/node`)
+to use the platform crypto instead.
 
 ### 5. Level 2 with AWS KMS (production)
 
@@ -245,6 +248,10 @@ make test          # unit + conformance vectors (Vitest)
 make lint          # biome check + tsc --noEmit
 make build         # bundle ESM + type declarations to dist/
 ```
+
+## Note on AI Assistance
+
+The core architecture, design decisions, and core implementations in this project are entirely my own. I used AI tools (Claude, Gemini) strictly under my explicit direction for code generation, text formatting, edge-case verification, and polishing my English prose. All outputs were heavily reviewed, corrected, and finalized by me.
 
 ## License
 
