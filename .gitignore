@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+
+# VSCode-remote noise not needed in this repo
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
