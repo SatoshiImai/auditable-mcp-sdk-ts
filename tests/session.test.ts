@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
-import { type AuditCapability, Level } from '../src/models';
 import { AmcpAbortedError, AmcpSession } from '../src/session';
 import type { AuditTransport } from '../src/transport';
 import { verifyLedger } from '../src/verify';
 import { withAudit } from '../src/with-audit';
-import { FixedDeps, MonotonicClock, OkVerifier, StubSigner } from './helpers';
+import { FixedDeps, L2_CAPABILITY, MonotonicClock, OkVerifier, StubSigner } from './helpers';
 
-const L2: AuditCapability = { level: Level.L2, attempt: 'request' };
 const TABLE = { kind: 'table', ref: 'orders' };
 
 function l1Pair(): { host: AuditHost; session: AmcpSession } {
@@ -49,7 +47,7 @@ describe('withAudit maps the handler result to the terminal outcome', () => {
 
   it('throws AmcpAbortedError and does not run the handler when the host refuses', async () => {
     // An L2 host with an unsigned session: the attempt is rejected as l2-unsigned.
-    const host = new AuditHost('tenant-a', L2, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
     const session = new AmcpSession(new InProcessTransport(host), 'call-1', { deps: new FixedDeps() });
     let ran = false;
     await expect(
@@ -123,7 +121,7 @@ describe('Polluted Stop (§7.2)', () => {
 
 describe('Level 2 session end-to-end', () => {
   it('signs, passes Polluted Stop, and seals a verifiable chain', async () => {
-    const host = new AuditHost('tenant-a', L2, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
     const session = new AmcpSession(new InProcessTransport(host), 'call-1', {
       deps: new FixedDeps(),
       signer: new StubSigner(),

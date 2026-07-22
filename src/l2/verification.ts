@@ -2,11 +2,11 @@
  * Level-2 verification (host side).
  *
  * Two detached-signature primitives over canonical(event − signature) (§8.2): Ed25519 and ECDSA
- * (AWS KMS does not offer Ed25519, so ECDSA covers the KMS/HSM case). `Ed25519SignatureVerifier` and
- * `EcdsaSignatureVerifier` are the symmetric host `SignatureVerifier` implementations: each resolves
- * the `key_id` in a `KeyRegistry` and returns a reject reason (`unknown-key` / `signature-invalid`)
- * or null. Verification is local — the public key is public, onboarded once — so no per-event KMS
- * call is needed.
+ * P-256/SHA-256 (AWS KMS does not offer Ed25519, so ECDSA covers the KMS/HSM case). `KeyRegistryVerifier`
+ * is the host `SignatureVerifier`: it resolves the `key_id` in a `KeyRegistry`, dispatches to the
+ * algorithm bound to that key (§5.1), and returns a Tier-1 reject reason (`unknown-key` /
+ * `signature-invalid`) or null. Verification is local — the public key is public, onboarded once — so
+ * no per-event KMS call is needed. One verifier handles a heterogeneous fleet.
  */
 
 import { base64ToBytes } from '../crypto/base64';
@@ -14,8 +14,9 @@ import type { EcdsaVerify, Ed25519Engine } from '../crypto/engine';
 import { nobleEcdsaVerify, nobleEd25519Engine } from '../crypto/noble';
 import * as fields from '../fields';
 import type { SignatureVerifier } from '../host';
+import type { RejectReason } from '../models';
 import * as reasons from '../reasons';
-import type { KeyRegistry } from './keys';
+import { type KeyRegistry, SignatureAlgorithm } from './keys';
 import { signaturePayload } from './signing';
 
 function decodeSignature(event: Record<string, unknown>): Uint8Array | null {
@@ -47,7 +48,12 @@ export function verifyEd25519Signature(
   }
 }
 
-/** Return true if the event's base64 DER-ECDSA signature verifies against the raw EC point. */
+/**
+ * Return true if the event's base64 signature verifies as ECDSA P-256/SHA-256 against the raw EC point.
+ *
+ * The signature is the fixed-length IEEE P1363 `r || s` form (§5.1), not DER; a wrong-length or
+ * undecodable value verifies false (mapped to `signature-invalid` by the caller).
+ */
 export function verifyEcdsaSignature(
   event: Record<string, unknown>,
   publicKeyPoint: Uint8Array,
@@ -64,53 +70,34 @@ export function verifyEcdsaSignature(
   }
 }
 
-/** A host `SignatureVerifier` backed by an Ed25519 public-key registry. */
-export class Ed25519SignatureVerifier implements SignatureVerifier {
-  readonly #registry: KeyRegistry;
-  readonly #engine: Ed25519Engine;
-
-  constructor(registry: KeyRegistry, engine: Ed25519Engine = nobleEd25519Engine) {
-    this.#registry = registry;
-    this.#engine = engine;
-  }
-
-  async verify(event: Record<string, unknown>): Promise<string | null> {
-    const keyId = event[fields.KEY_ID];
-    const publicKey = typeof keyId === 'string' ? this.#registry.get(keyId) : undefined;
-    if (publicKey === undefined) {
-      return reasons.UNKNOWN_KEY;
-    }
-    if (!verifyEd25519Signature(event, publicKey, this.#engine)) {
-      return reasons.SIGNATURE_INVALID;
-    }
-    return null;
-  }
-}
-
 /**
- * A host `SignatureVerifier` backed by an elliptic-curve public-key registry (ECDSA).
+ * A host `SignatureVerifier` backed by an algorithm-bound `KeyRegistry`.
  *
- * The symmetric counterpart to `Ed25519SignatureVerifier` for keys held in a KMS/HSM or elsewhere;
- * populate its registry with raw EC points (e.g. loaded from KMS, see `l2/adapters/aws-kms.ts`).
+ * Per event it resolves `key_id` to its registry entry and dispatches to the bound algorithm's
+ * primitive, so Ed25519 and ECDSA P-256 tools verify through one instance (§5.1). The crypto engines
+ * are injectable (noble by default).
  */
-export class EcdsaSignatureVerifier implements SignatureVerifier {
+export class KeyRegistryVerifier implements SignatureVerifier {
   readonly #registry: KeyRegistry;
+  readonly #ed25519Engine: Ed25519Engine;
   readonly #ecdsaVerify: EcdsaVerify;
 
-  constructor(registry: KeyRegistry, options: { ecdsaVerify?: EcdsaVerify } = {}) {
+  constructor(registry: KeyRegistry, options: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify } = {}) {
     this.#registry = registry;
+    this.#ed25519Engine = options.ed25519Engine ?? nobleEd25519Engine;
     this.#ecdsaVerify = options.ecdsaVerify ?? nobleEcdsaVerify;
   }
 
-  async verify(event: Record<string, unknown>): Promise<string | null> {
+  async verify(event: Record<string, unknown>): Promise<RejectReason | null> {
     const keyId = event[fields.KEY_ID];
-    const publicKey = typeof keyId === 'string' ? this.#registry.get(keyId) : undefined;
-    if (publicKey === undefined) {
+    const entry = typeof keyId === 'string' ? this.#registry.get(keyId) : undefined;
+    if (entry === undefined) {
       return reasons.UNKNOWN_KEY;
     }
-    if (!verifyEcdsaSignature(event, publicKey, this.#ecdsaVerify)) {
-      return reasons.SIGNATURE_INVALID;
-    }
-    return null;
+    const verified =
+      entry.algorithm === SignatureAlgorithm.ED25519
+        ? verifyEd25519Signature(event, entry.publicKey, this.#ed25519Engine)
+        : verifyEcdsaSignature(event, entry.publicKey, this.#ecdsaVerify);
+    return verified ? null : reasons.SIGNATURE_INVALID;
   }
 }

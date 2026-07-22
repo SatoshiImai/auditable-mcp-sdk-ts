@@ -7,8 +7,12 @@
 import type { Clock } from '../src/clock';
 import type { SignatureVerifier } from '../src/host';
 import type { SealedRecord } from '../src/ledger';
+import { type AuditCapability, Level, type RejectReason, SPEC_VERSION } from '../src/models';
 import type { Deps, EventSigner } from '../src/session';
 import { type LedgerRepository, RepositoryError } from '../src/storage/repository';
+
+/** An L2 host/tool capability at the current spec version. */
+export const L2_CAPABILITY: AuditCapability = { spec_version: SPEC_VERSION, level: Level.L2, attempt: 'request' };
 
 /** A monotonic host clock producing valid ISO-8601 timestamps. */
 export class MonotonicClock implements Clock {
@@ -36,20 +40,20 @@ export class StubSigner implements EventSigner {
   #seq = 0;
   async sign(event: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.#seq += 1;
-    return { ...event, key_id: 'k1', sequence: this.#seq, signature: 'stub' };
+    return { ...event, key_id: 'k1', signer_seq: this.#seq, signature: 'stub' };
   }
 }
 
 /** A verifier that accepts every signature. */
 export class OkVerifier implements SignatureVerifier {
-  async verify(): Promise<string | null> {
+  async verify(): Promise<RejectReason | null> {
     return null;
   }
 }
 
 /** A verifier that rejects every signature as forged. */
 export class BadVerifier implements SignatureVerifier {
-  async verify(): Promise<string | null> {
+  async verify(): Promise<RejectReason | null> {
     return 'signature-invalid';
   }
 }
@@ -71,7 +75,7 @@ export class FailingRepository implements LedgerRepository {
 export function makeAttempt(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id,
-    spec_version: 'auditable-mcp/0.1',
+    spec_version: SPEC_VERSION,
     ts: '2026-07-15T00:00:01.000Z',
     call_id: 'call_abc',
     action_type: 'db.read',
@@ -83,9 +87,9 @@ export function makeAttempt(id: string, overrides: Record<string, unknown> = {})
   };
 }
 
-/** Stamp an event with L2 fields at a given sequence. */
-export function signed(event: Record<string, unknown>, sequence: number): Record<string, unknown> {
-  return { ...event, key_id: 'k1', sequence, signature: 'stub' };
+/** Stamp an event with L2 fields at a given signer_seq. */
+export function signed(event: Record<string, unknown>, signerSeq: number): Record<string, unknown> {
+  return { ...event, key_id: 'k1', signer_seq: signerSeq, signature: 'stub' };
 }
 
 /** A stable set of valid event ids. */

@@ -30,14 +30,14 @@ export function accept(seq: number, recordHash: string, hostTs: string, previous
   return { status: Status.ACCEPT, seq, record_hash: recordHash, host_ts: hostTs, previous_hash: previousHash };
 }
 
-/** Build a reject response (ledger integrity could not be guaranteed, §7.1). */
-export function reject(reason: string): RejectResponse {
+/** Build a reject response with a Tier-1 reject `reason` (ledger integrity not guaranteed, §7.1). */
+export function reject(reason: RejectResponse['reason']): RejectResponse {
   return { status: Status.REJECT, reason };
 }
 
-/** Build a retryable unavailable response (transient persistence failure, §7.1). */
-export function unavailable(reason: string): UnavailableResponse {
-  return { status: Status.UNAVAILABLE, reason, retryable: true };
+/** Build a retryable unavailable response (a host-internal failure, §7.1; `reason` is `internal-error`). */
+export function unavailable(): UnavailableResponse {
+  return { status: Status.UNAVAILABLE, reason: 'internal-error', retryable: true };
 }
 
 /** The tool-side transport: negotiate once, then send attempts (blocking) and outcomes. */

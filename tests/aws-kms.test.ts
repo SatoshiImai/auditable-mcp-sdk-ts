@@ -3,11 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
 import { AwsKmsSigner, AwsKmsVerifier, type KmsClient, loadKmsPublicKey } from '../src/l2/adapters/aws-kms';
-import { type AuditCapability, Level } from '../src/models';
 import { AmcpSession } from '../src/session';
 import { verifyLedger } from '../src/verify';
 import { withAudit } from '../src/with-audit';
-import { FixedDeps, MonotonicClock } from './helpers';
+import { FixedDeps, L2_CAPABILITY, MonotonicClock } from './helpers';
 
 // The fixed P-256 SubjectPublicKeyInfo prefix; the uncompressed point follows it.
 const P256_SPKI_PREFIX = Uint8Array.from(Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex'));
@@ -31,7 +30,6 @@ class FakeKms implements KmsClient {
   }
 }
 
-const L2: AuditCapability = { level: Level.L2, attempt: 'request' };
 const TABLE = { kind: 'table', ref: 'orders' };
 
 describe('AWS KMS adapter (ECDSA P-256)', () => {
@@ -45,7 +43,7 @@ describe('AWS KMS adapter (ECDSA P-256)', () => {
     const kms = new FakeKms();
     const verifier = await AwsKmsVerifier.fromKms(kms, { 'tool-1': 'arn:key' });
 
-    const host = new AuditHost('tenant-a', L2, { verifier, clock: new MonotonicClock() });
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier, clock: new MonotonicClock() });
     const session = new AmcpSession(new InProcessTransport(host), 'call-1', {
       deps: new FixedDeps(),
       signer: new AwsKmsSigner(kms, 'arn:key', { eventKeyId: 'tool-1' }),

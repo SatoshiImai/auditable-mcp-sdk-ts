@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { AuditHost } from '../src/host';
-import { type AuditCapability, Level } from '../src/models';
 import { InMemoryLedgerRepository } from '../src/storage';
 import { verifyLedger } from '../src/verify';
-import { BadVerifier, eventIdAt, FailingRepository, MonotonicClock, makeAttempt, OkVerifier, signed } from './helpers';
-
-const L2: AuditCapability = { level: Level.L2, attempt: 'request' };
+import {
+  BadVerifier,
+  eventIdAt,
+  FailingRepository,
+  L2_CAPABILITY,
+  MonotonicClock,
+  makeAttempt,
+  OkVerifier,
+  signed,
+} from './helpers';
 
 function l1Host(): AuditHost {
   return new AuditHost('tenant-a', undefined, { clock: new MonotonicClock() });
@@ -22,7 +28,7 @@ describe('AuditHost attempt validation (§7.1)', () => {
     expect(host.records()).toHaveLength(1);
   });
 
-  it('rejects and flags a malformed attempt', async () => {
+  it('rejects and flags a malformed attempt as schema-invalid', async () => {
     const host = l1Host();
     const bad = makeAttempt(eventIdAt(1));
     delete bad.target_resource;
@@ -34,43 +40,44 @@ describe('AuditHost attempt validation (§7.1)', () => {
     expect(host.anomalies().some((a) => a.kind === 'schema-invalid')).toBe(true);
   });
 
-  it('rejects an attempt whose outcome is not attempted', async () => {
+  it('rejects a non-attempted outcome on an attempt as schema-invalid', async () => {
     const host = l1Host();
     const response = await host.handleAttempt(makeAttempt(eventIdAt(1), { outcome: 'success' }));
     expect(response.status).toBe('reject');
     if (response.status === 'reject') {
-      expect(response.reason).toBe('attempt-must-be-attempted');
+      expect(response.reason).toBe('schema-invalid');
     }
   });
 
-  it('rejects a number outside the §8.1 domain before it can break canonicalization', async () => {
+  it('rejects a number outside the §8.1 domain as schema-invalid', async () => {
     const host = l1Host();
     const response = await host.handleAttempt(makeAttempt(eventIdAt(1), { action_context: { n: 2 ** 53 } }));
     expect(response.status).toBe('reject');
     if (response.status === 'reject') {
-      expect(response.reason).toBe('numeric-domain');
+      expect(response.reason).toBe('schema-invalid');
     }
   });
 
-  it('rejects a duplicate attempt id as a replay', async () => {
+  it('rejects a duplicate attempt id as replay-detected', async () => {
     const host = l1Host();
     const event = makeAttempt(eventIdAt(1));
     await host.handleAttempt(event);
     const response = await host.handleAttempt(event);
     expect(response.status).toBe('reject');
     if (response.status === 'reject') {
-      expect(response.reason).toBe('attempt-replay');
+      expect(response.reason).toBe('replay-detected');
     }
   });
 });
 
 describe('AuditHost fail-closed persistence (§7.1)', () => {
-  it('returns unavailable when persistence is flagged down', async () => {
+  it('returns unavailable/internal-error when persistence is flagged down', async () => {
     const host = l1Host();
     host.persistenceAvailable = false;
     const response = await host.handleAttempt(makeAttempt(eventIdAt(1)));
     expect(response.status).toBe('unavailable');
     if (response.status === 'unavailable') {
+      expect(response.reason).toBe('internal-error');
       expect(response.retryable).toBe(true);
     }
   });
@@ -96,16 +103,25 @@ describe('AuditHost outcome handling (§7.2)', () => {
     expect(verifyLedger(host.records(), host.digest()).ok).toBe(true);
   });
 
-  it('flags an outcome that never had an accepted attempt', async () => {
+  it('drops an attempted outcome on the audit/outcome channel and flags schema-invalid (§6)', async () => {
+    const host = l1Host();
+    const attempt = makeAttempt(eventIdAt(1));
+    await host.handleAttempt(attempt);
+    await host.handleOutcome({ ...attempt, outcome: 'attempted' });
+    expect(host.records()).toHaveLength(1);
+    expect(host.anomalies().some((a) => a.kind === 'schema-invalid')).toBe(true);
+  });
+
+  it('flags an outcome that never had an accepted attempt as orphaned-outcome', async () => {
     const host = l1Host();
     await host.handleOutcome(makeAttempt(eventIdAt(1), { outcome: 'success' }));
     expect(host.records()).toHaveLength(0);
-    expect(host.anomalies().some((a) => a.kind === 'outcome-without-attempt')).toBe(true);
+    expect(host.anomalies().some((a) => a.kind === 'orphaned-outcome')).toBe(true);
   });
 
   it('exempts an aborted outcome for a never-accepted attempt (§10.4)', async () => {
     const host = l1Host();
-    await host.handleOutcome(makeAttempt(eventIdAt(1), { outcome: 'aborted' }));
+    await host.handleOutcome(makeAttempt(eventIdAt(1), { outcome: 'aborted', reason: 'host-rejected' }));
     expect(host.records()).toHaveLength(0);
     expect(host.anomalies()).toHaveLength(0);
   });
@@ -113,17 +129,17 @@ describe('AuditHost outcome handling (§7.2)', () => {
 
 describe('AuditHost Level 2 (§7.1, §7.4)', () => {
   it('requires a verifier at construction time', () => {
-    expect(() => new AuditHost('tenant-a', L2)).toThrow(/SignatureVerifier/);
+    expect(() => new AuditHost('tenant-a', L2_CAPABILITY)).toThrow(/SignatureVerifier/);
   });
 
   it('accepts a valid signed attempt', async () => {
-    const host = new AuditHost('tenant-a', L2, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
     const response = await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 1));
     expect(response.status).toBe('accept');
   });
 
-  it('rejects a forged signature', async () => {
-    const host = new AuditHost('tenant-a', L2, { verifier: new BadVerifier(), clock: new MonotonicClock() });
+  it('rejects a forged signature as signature-invalid', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new BadVerifier(), clock: new MonotonicClock() });
     const response = await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 1));
     expect(response.status).toBe('reject');
     if (response.status === 'reject') {
@@ -131,8 +147,8 @@ describe('AuditHost Level 2 (§7.1, §7.4)', () => {
     }
   });
 
-  it('rejects an unsigned attempt under L2', async () => {
-    const host = new AuditHost('tenant-a', L2, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+  it('rejects an unsigned attempt under L2 as l2-unsigned', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
     const response = await host.handleAttempt(makeAttempt(eventIdAt(1)));
     expect(response.status).toBe('reject');
     if (response.status === 'reject') {
@@ -140,22 +156,29 @@ describe('AuditHost Level 2 (§7.1, §7.4)', () => {
     }
   });
 
-  it('rejects a replayed signer sequence and flags it', async () => {
-    const host = new AuditHost('tenant-a', L2, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+  it('rejects a replayed signer_seq as replay-detected', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
     await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 5));
     const response = await host.handleAttempt(signed(makeAttempt(eventIdAt(2)), 5));
     expect(response.status).toBe('reject');
     if (response.status === 'reject') {
-      expect(response.reason).toBe('signer-sequence-replay');
+      expect(response.reason).toBe('replay-detected');
     }
   });
 
-  it('accepts but flags a forward signer-sequence gap', async () => {
-    const host = new AuditHost('tenant-a', L2, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+  it('accepts but flags a forward signer_seq gap as signer-seq-gap', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
     await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 1));
     const response = await host.handleAttempt(signed(makeAttempt(eventIdAt(2)), 3));
     expect(response.status).toBe('accept');
-    expect(host.anomalies().some((a) => a.kind === 'signer-sequence-gap')).toBe(true);
+    expect(host.anomalies().some((a) => a.kind === 'signer-seq-gap')).toBe(true);
+  });
+
+  it('does not flag the first signer_seq observed as a gap (baseline)', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier: new OkVerifier(), clock: new MonotonicClock() });
+    const response = await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 42));
+    expect(response.status).toBe('accept');
+    expect(host.anomalies()).toHaveLength(0);
   });
 });
 

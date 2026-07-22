@@ -5,7 +5,8 @@
  * mutation of an event propagates to the tail digest and is localized. An out-of-band anchored digest
  * (§8.3) catches a fully re-linked rewrite or truncation that an internally-consistent chain cannot.
  * This is a read-only auditor over records that may come straight from a `Ledger` or be reloaded from
- * untrusted storage, so each event is re-validated structurally before it is trusted.
+ * untrusted storage. `verifyChain` checks chain integrity alone (§8.3); `verifyLedger` adds A-MCP
+ * event-schema validation on top (§7.1).
  */
 
 import * as fields from './fields';
@@ -14,12 +15,13 @@ import type { SealedRecord } from './ledger';
 import { firstValidationError, Outcome } from './models';
 import * as reasons from './reasons';
 
-// Verify issue kinds specific to full-chain audit; the host ingest path uses its own vocabulary.
-export const SEQ_GAP = 'seq-gap';
-export const SEQ_OUT_OF_ORDER = 'seq-out-of-order';
-export const PREV_HASH_MISMATCH = 'prev-hash-mismatch';
-export const RECORD_HASH_MISMATCH = 'record-hash-mismatch';
-export const DIGEST_MISMATCH = 'digest-mismatch';
+// A verifier reports only the §7.6 Tier-1 anomaly kinds. Re-exported here for convenience so callers
+// can match against them without importing `reasons` directly; finer causes go in `detail` (Tier-2).
+export const SCHEMA_INVALID = reasons.SCHEMA_INVALID;
+export const SEQ_GAP = reasons.SEQ_GAP;
+export const RECORD_HASH_MISMATCH = reasons.RECORD_HASH_MISMATCH;
+export const DIGEST_MISMATCH = reasons.DIGEST_MISMATCH;
+export const ORPHANED_OUTCOME = reasons.ORPHANED_OUTCOME;
 
 /** A single verification failure. `seq` is null for whole-ledger issues (e.g. digest mismatch). */
 export interface VerifyIssue {
@@ -37,17 +39,17 @@ export interface VerifyReport {
 }
 
 /**
- * Verify a sealed ledger for non-tampering and completeness.
+ * Verify chain integrity alone, independent of the event vocabulary (§8.3).
  *
- * Detects: malformed events, sequence gaps / out-of-order, broken previous-hash links, mutated
- * record hashes, outcomes with no correlating attempt, and (with `anchoredDigest`) a re-linked
- * rewrite or truncation.
+ * Checks sequence order, previous-hash linkage, record-hash recomputation, attempt/outcome
+ * correlation, and (with `anchoredDigest`) the anchored-digest compare. This is the tamper-evidence
+ * guarantee for any events sealed through `Ledger`; it never inspects the event schema.
  *
  * @param records The sealed records in append order (from a `Ledger` or reloaded storage).
  * @param anchoredDigest An out-of-band anchored tail digest to compare against, if available (§8.3).
  * @returns A report; `ok` is true only when no issues were found.
  */
-export function verifyLedger(records: SealedRecord[], anchoredDigest?: string): VerifyReport {
+export function verifyChain(records: SealedRecord[], anchoredDigest?: string): VerifyReport {
   const issues: VerifyIssue[] = [];
   const attemptedIds = new Set<unknown>();
   let prevRecomputed = GENESIS_HASH;
@@ -59,21 +61,21 @@ export function verifyLedger(records: SealedRecord[], anchoredDigest?: string): 
     }
     const event = record.event;
 
-    const structural = firstValidationError(event);
-    if (structural !== null) {
-      issues.push({ seq: record.seq, kind: reasons.SCHEMA_INVALID, detail: structural });
-    }
-
     if (record.seq !== index) {
-      const kind = record.seq > index ? SEQ_GAP : SEQ_OUT_OF_ORDER;
-      issues.push({ seq: record.seq, kind, detail: `expected seq ${index}, got ${record.seq}` });
+      // Out-of-order is rolled up to seq-gap (Tier-1); the direction is a Tier-2 detail.
+      issues.push({ seq: record.seq, kind: SEQ_GAP, detail: `expected seq ${index}, got ${record.seq}` });
     }
 
     // Recompute from the record body against the recomputed prior link, not the stored one, so a
-    // mutation cannot hide behind its own stored hashes.
+    // mutation cannot hide behind its own stored hashes. A broken previous_hash link surfaces as a
+    // record-hash-mismatch (Tier-1); the "link" detail distinguishes it locally.
     const recomputed = computeRecordHash(event, record.seq, record.host_ts, prevRecomputed);
     if (record.previous_hash !== prevRecomputed) {
-      issues.push({ seq: record.seq, kind: PREV_HASH_MISMATCH, detail: 'previous_hash does not link to prior record' });
+      issues.push({
+        seq: record.seq,
+        kind: RECORD_HASH_MISMATCH,
+        detail: 'previous_hash does not link to prior record',
+      });
     }
     if (record.record_hash !== recomputed) {
       issues.push({ seq: record.seq, kind: RECORD_HASH_MISMATCH, detail: 'stored record_hash != recomputed' });
@@ -86,7 +88,7 @@ export function verifyLedger(records: SealedRecord[], anchoredDigest?: string): 
     } else if (!attemptedIds.has(eventId)) {
       issues.push({
         seq: record.seq,
-        kind: reasons.OUTCOME_WITHOUT_ATTEMPT,
+        kind: ORPHANED_OUTCOME,
         detail: `outcome=${String(outcome)} id=${String(eventId)}`,
       });
     }
@@ -104,4 +106,34 @@ export function verifyLedger(records: SealedRecord[], anchoredDigest?: string): 
   }
 
   return { ok: issues.length === 0, count: records.length, computedDigest, issues };
+}
+
+/**
+ * Verify chain integrity and A-MCP event-schema conformance (§8.3 + §7.1).
+ *
+ * `verifyChain` followed by a per-record schema check: a record that is not a strict A-MCP event is
+ * flagged `schema-invalid`. For A-MCP events the result is identical to `verifyChain`.
+ *
+ * @param records The sealed records in append order (from a `Ledger` or reloaded storage).
+ * @param anchoredDigest An out-of-band anchored tail digest to compare against, if available (§8.3).
+ * @returns A report; `ok` is true only when no issues were found.
+ */
+export function verifyLedger(records: SealedRecord[], anchoredDigest?: string): VerifyReport {
+  const report = verifyChain(records, anchoredDigest);
+  const schemaIssues: VerifyIssue[] = [];
+  for (const record of records) {
+    const structural = firstValidationError(record.event);
+    if (structural !== null) {
+      schemaIssues.push({ seq: record.seq, kind: reasons.SCHEMA_INVALID, detail: structural });
+    }
+  }
+  if (schemaIssues.length === 0) {
+    return report;
+  }
+  return {
+    ok: false,
+    count: report.count,
+    computedDigest: report.computedDigest,
+    issues: [...report.issues, ...schemaIssues],
+  };
 }

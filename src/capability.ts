@@ -14,11 +14,14 @@ import { type AuditCapability, Level } from './models';
 // while an L1-only tool does not satisfy an L2 requirement.
 const LEVEL_RANK: Record<string, number> = { [Level.L1]: 1, [Level.L2]: 2 };
 
-/** The outcome of a capability exchange: the requirement, the offer, and whether it fits. */
+/** The outcome of a capability exchange: the requirement, the offer, and the fit. */
 export interface NegotiationResult {
   required: AuditCapability;
   offered: AuditCapability;
+  /** True if the offered level meets the requirement and the spec versions match. */
   satisfied: boolean;
+  /** True if both sides declare the same `spec_version` (§6.1). */
+  versionMatch: boolean;
 }
 
 /** Return true if `offered` supports at least the `required` level. */
@@ -26,7 +29,13 @@ export function capabilitySatisfies(offered: AuditCapability, required: AuditCap
   return (LEVEL_RANK[offered.level] ?? 0) >= (LEVEL_RANK[required.level] ?? 0);
 }
 
-/** Compare a tool's offered capability against a host requirement (§6.1). */
+/**
+ * Compare a tool's offered capability against a host requirement (§6.1).
+ *
+ * A `0.x` draft has no on-the-wire compatibility window, so `satisfied` requires both a level fit and
+ * an exact `spec_version` match; `versionMatch` surfaces a version mismatch on its own.
+ */
 export function negotiate(required: AuditCapability, offered: AuditCapability): NegotiationResult {
-  return { required, offered, satisfied: capabilitySatisfies(offered, required) };
+  const versionMatch = offered.spec_version === required.spec_version;
+  return { required, offered, satisfied: capabilitySatisfies(offered, required) && versionMatch, versionMatch };
 }
