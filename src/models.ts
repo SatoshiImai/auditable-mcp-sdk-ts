@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { MAX_SAFE_INTEGER } from './canonical';
 
 // The only spec version defined by this contract; a mismatch is a hard validation error.
-export const SPEC_VERSION = 'auditable-mcp/0.1.1' as const;
+export const SPEC_VERSION = 'auditable-mcp/0.2' as const;
 
 // Patterns copied verbatim from the normative JSON Schema (spec/schema/).
 export const UUID_PATTERN =

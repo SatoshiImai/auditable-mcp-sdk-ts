@@ -6,7 +6,7 @@
  * `node:crypto` engine) live in `auditable-mcp-sdk/node`; the default L2 crypto engine is the
  * universal noble engine, also exported from `auditable-mcp-sdk/noble`.
  *
- * The `spec_version` implemented is `auditable-mcp/0.1.1`.
+ * The `spec_version` implemented is `auditable-mcp/0.2`.
  */
 
 export {

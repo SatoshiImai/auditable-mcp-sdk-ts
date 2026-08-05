@@ -116,6 +116,6 @@ describe('Outcome / Level / Status values equal the wire strings', () => {
     expect(Outcome.ATTEMPTED).toBe('attempted');
     expect(Level.L2).toBe('L2');
     expect(Status.ACCEPT).toBe('accept');
-    expect(SPEC_VERSION).toBe('auditable-mcp/0.1.1');
+    expect(SPEC_VERSION).toBe('auditable-mcp/0.2');
   });
 });
