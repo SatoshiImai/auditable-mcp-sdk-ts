@@ -6,7 +6,7 @@
  * `node:crypto` engine) live in `auditable-mcp-sdk/node`; the default L2 crypto engine is the
  * universal noble engine, also exported from `auditable-mcp-sdk/noble`.
  *
- * The `spec_version` implemented is `auditable-mcp/0.1.1`.
+ * The `spec_version` implemented is `auditable-mcp/0.2`.
  */
 
 export {
@@ -57,7 +57,9 @@ export {
   attemptResponseSchema,
   auditCapabilitySchema,
   auditEventSchema,
+  firstSealedValidationError,
   firstValidationError,
+  KNOWN_SPEC_VERSIONS,
   Level,
   Outcome,
   type RejectReason,
@@ -65,6 +67,7 @@ export {
   rejectResponseSchema,
   SPEC_VERSION,
   Status,
+  sealedAuditEventSchema,
   type TargetResource,
   targetResourceSchema,
   type UnavailableResponse,
@@ -81,7 +84,14 @@ export {
 } from './session';
 export { InMemoryLedgerRepository, type LedgerRepository, RepositoryError } from './storage';
 export { type AuditEndpoint, type AuditTransport, accept, reject, unavailable } from './transport';
-export { type VerifyIssue, type VerifyReport, verifyChain, verifyLedger } from './verify';
+export {
+  DEFAULT_ADAPTER,
+  type RecordAdapter,
+  type VerifyIssue,
+  type VerifyReport,
+  verifyChain,
+  verifyLedger,
+} from './verify';
 export { type AuditSpec, withAudit } from './with-audit';
 
 export const VERSION = '0.1.0';
