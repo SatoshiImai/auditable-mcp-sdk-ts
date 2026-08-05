@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SealedRecord } from '../src/ledger';
 import { Ledger } from '../src/ledger';
+import { firstSealedValidationError, firstValidationError } from '../src/models';
 import {
   DIGEST_MISMATCH,
   RECORD_HASH_MISMATCH,
+  type RecordAdapter,
   SCHEMA_INVALID,
   SEQ_GAP,
   verifyChain,
@@ -14,6 +16,78 @@ import { chainSignedVector, chainVector } from './vectors';
 function boundaryEvent(id: string, outcome = 'attempted'): Record<string, unknown> {
   return { id, actor: 'odin', tenant: 'tenant-a', category: 'boundary', outcome };
 }
+
+function amcpEvent(
+  id: string,
+  outcome = 'attempted',
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id,
+    spec_version: 'auditable-mcp/0.2',
+    ts: '2026-07-15T00:00:01.000Z',
+    call_id: 'call_abc',
+    action_type: 'db.read',
+    mutates: false,
+    egress: false,
+    target_resource: { kind: 'table', ref: 'customers' },
+    outcome,
+    ...overrides,
+  };
+}
+
+describe('verifyLedger is read-lenient on spec_version', () => {
+  it('verifies a chain sealed under an earlier published spec_version (immutable evidence)', () => {
+    const ledger = new Ledger('tenant-a');
+    const legacy = { spec_version: 'auditable-mcp/0.1.1' };
+    ledger.append(amcpEvent('00000000-0000-4000-8000-000000000001', 'attempted', legacy), '2026-07-15T00:00:01.000Z');
+    ledger.append(amcpEvent('00000000-0000-4000-8000-000000000001', 'success', legacy), '2026-07-15T00:00:02.000Z');
+    const report = verifyLedger(ledger.records());
+    expect(report.ok).toBe(true);
+    expect(report.issues).toHaveLength(0);
+  });
+
+  it('ingest stays strict while verification is lenient (read/write split)', () => {
+    const legacy = amcpEvent('00000000-0000-4000-8000-000000000001', 'attempted', {
+      spec_version: 'auditable-mcp/0.1.1',
+    });
+    expect(firstValidationError(legacy)).not.toBeNull();
+    expect(firstSealedValidationError(legacy)).toBeNull();
+  });
+});
+
+function enveloped(amcp: Record<string, unknown>): Record<string, unknown> {
+  return { schema: 'sep3004', sealed_at: '2026-07-15T00:00:00Z', amcp };
+}
+
+describe('verifyLedger reaches into an envelope via an adapter', () => {
+  it('correlates and schema-checks a-MCP events sealed inside SEP-3004 envelopes', () => {
+    const ledger = new Ledger('tenant-a');
+    ledger.append(
+      enveloped(amcpEvent('00000000-0000-4000-8000-000000000001', 'attempted')),
+      '2026-07-15T00:00:01.000Z',
+    );
+    ledger.append(enveloped(amcpEvent('00000000-0000-4000-8000-000000000001', 'success')), '2026-07-15T00:00:02.000Z');
+    const adapter: RecordAdapter = {
+      idOf: (event) => (event.amcp as Record<string, unknown>).id,
+      isAttempt: (event) => (event.amcp as Record<string, unknown>).outcome === 'attempted',
+      eventOf: (event) => event.amcp,
+    };
+    const report = verifyLedger(ledger.records(), undefined, adapter);
+    expect(report.ok).toBe(true);
+    expect(report.issues).toHaveLength(0);
+  });
+
+  it('the default adapter cannot read an envelope (schema-invalid)', () => {
+    const ledger = new Ledger('tenant-a');
+    ledger.append(
+      enveloped(amcpEvent('00000000-0000-4000-8000-000000000001', 'attempted')),
+      '2026-07-15T00:00:01.000Z',
+    );
+    const kinds = verifyLedger(ledger.records()).issues.map((i) => i.kind);
+    expect(kinds).toContain(SCHEMA_INVALID);
+  });
+});
 
 function sealedBoundaryPair(): Ledger {
   const ledger = new Ledger('tenant-a');

@@ -12,7 +12,7 @@
 import * as fields from './fields';
 import { computeRecordHash, GENESIS_HASH } from './hashing';
 import type { SealedRecord } from './ledger';
-import { firstValidationError, Outcome } from './models';
+import { firstSealedValidationError, Outcome } from './models';
 import * as reasons from './reasons';
 
 // A verifier reports only the §7.6 Tier-1 anomaly kinds. Re-exported here for convenience so callers
@@ -39,6 +39,33 @@ export interface VerifyReport {
 }
 
 /**
+ * How the verifier reads a-MCP correlation fields and the embedded event out of a sealed record.
+ *
+ * The defaults (`DEFAULT_ADAPTER`) read a bare, top-level a-MCP event. A caller that seals a-MCP
+ * records inside another envelope (e.g. SEP-3004) provides accessors that reach into it, so the
+ * verifier can correlate and schema-check the enveloped event without the SDK importing any specific
+ * envelope shape.
+ */
+export interface RecordAdapter {
+  /** Extract the correlation key that pairs an attempt with its terminal outcome. */
+  idOf: (event: Record<string, unknown>) => unknown;
+  /** True when the record is an attempt, false for a terminal outcome. */
+  isAttempt: (event: Record<string, unknown>) => boolean;
+  /** Extract the embedded a-MCP event that `verifyLedger` schema-checks. */
+  eventOf: (event: Record<string, unknown>) => unknown;
+}
+
+/**
+ * The sealed event is itself a bare, top-level a-MCP event. Spread it to override only what you need:
+ * `{ ...DEFAULT_ADAPTER, idOf: (e) => (e.sep3004 as { id: unknown }).id }`.
+ */
+export const DEFAULT_ADAPTER: RecordAdapter = {
+  idOf: (event) => event[fields.ID],
+  isAttempt: (event) => event[fields.OUTCOME] === Outcome.ATTEMPTED,
+  eventOf: (event) => event,
+};
+
+/**
  * Verify chain integrity alone, independent of the event vocabulary (§8.3).
  *
  * Checks sequence order, previous-hash linkage, record-hash recomputation, attempt/outcome
@@ -47,9 +74,15 @@ export interface VerifyReport {
  *
  * @param records The sealed records in append order (from a `Ledger` or reloaded storage).
  * @param anchoredDigest An out-of-band anchored tail digest to compare against, if available (§8.3).
+ * @param adapter How to read the correlation key and attempt flag from each sealed record. Defaults to
+ *   a bare top-level a-MCP event; inject accessors to correlate records sealed inside an envelope.
  * @returns A report; `ok` is true only when no issues were found.
  */
-export function verifyChain(records: SealedRecord[], anchoredDigest?: string): VerifyReport {
+export function verifyChain(
+  records: SealedRecord[],
+  anchoredDigest?: string,
+  adapter: RecordAdapter = DEFAULT_ADAPTER,
+): VerifyReport {
   const issues: VerifyIssue[] = [];
   const attemptedIds = new Set<unknown>();
   let prevRecomputed = GENESIS_HASH;
@@ -81,15 +114,14 @@ export function verifyChain(records: SealedRecord[], anchoredDigest?: string): V
       issues.push({ seq: record.seq, kind: RECORD_HASH_MISMATCH, detail: 'stored record_hash != recomputed' });
     }
 
-    const outcome = event[fields.OUTCOME];
-    const eventId = event[fields.ID];
-    if (outcome === Outcome.ATTEMPTED) {
+    const eventId = adapter.idOf(event);
+    if (adapter.isAttempt(event)) {
       attemptedIds.add(eventId);
     } else if (!attemptedIds.has(eventId)) {
       issues.push({
         seq: record.seq,
         kind: ORPHANED_OUTCOME,
-        detail: `outcome=${String(outcome)} id=${String(eventId)}`,
+        detail: `terminal outcome with no matching attempt, id=${String(eventId)}`,
       });
     }
 
@@ -111,18 +143,26 @@ export function verifyChain(records: SealedRecord[], anchoredDigest?: string): V
 /**
  * Verify chain integrity and A-MCP event-schema conformance (§8.3 + §7.1).
  *
- * `verifyChain` followed by a per-record schema check: a record that is not a strict A-MCP event is
- * flagged `schema-invalid`. For A-MCP events the result is identical to `verifyChain`.
+ * `verifyChain` followed by a per-record schema check: a record whose embedded event is not a valid
+ * A-MCP event is flagged `schema-invalid`. It is read-lenient on `spec_version` (any published
+ * version), so a chain sealed under an earlier version still verifies. For valid A-MCP events the
+ * result is identical to `verifyChain`.
  *
  * @param records The sealed records in append order (from a `Ledger` or reloaded storage).
  * @param anchoredDigest An out-of-band anchored tail digest to compare against, if available (§8.3).
+ * @param adapter How to read the correlation fields and extract the embedded a-MCP event. Defaults to
+ *   a bare top-level a-MCP event; inject `eventOf` to schema-check an event sealed inside an envelope.
  * @returns A report; `ok` is true only when no issues were found.
  */
-export function verifyLedger(records: SealedRecord[], anchoredDigest?: string): VerifyReport {
-  const report = verifyChain(records, anchoredDigest);
+export function verifyLedger(
+  records: SealedRecord[],
+  anchoredDigest?: string,
+  adapter: RecordAdapter = DEFAULT_ADAPTER,
+): VerifyReport {
+  const report = verifyChain(records, anchoredDigest, adapter);
   const schemaIssues: VerifyIssue[] = [];
   for (const record of records) {
-    const structural = firstValidationError(record.event);
+    const structural = firstSealedValidationError(adapter.eventOf(record.event));
     if (structural !== null) {
       schemaIssues.push({ seq: record.seq, kind: reasons.SCHEMA_INVALID, detail: structural });
     }

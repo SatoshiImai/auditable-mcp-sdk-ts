@@ -34,7 +34,7 @@ const validateSchema = new Ajv2020({ strict: false }).compile(eventSchema);
 
 const validBase: Record<string, unknown> = {
   id: '00000000-0000-4000-8000-000000000001',
-  spec_version: 'auditable-mcp/0.1.1',
+  spec_version: 'auditable-mcp/0.2',
   ts: '2026-07-15T00:00:01.000Z',
   call_id: 'call_abc',
   action_type: 'db.read',
@@ -110,7 +110,7 @@ const CAPABILITY_SCHEMA_PATH = join(
 const capabilitySchema = JSON.parse(readFileSync(CAPABILITY_SCHEMA_PATH, 'utf-8'));
 const validateCapabilitySchema = new Ajv2020({ strict: false }).compile(capabilitySchema);
 
-const capValid: Record<string, unknown> = { spec_version: 'auditable-mcp/0.1.1', level: 'L1', attempt: 'request' };
+const capValid: Record<string, unknown> = { spec_version: 'auditable-mcp/0.2', level: 'L1', attempt: 'request' };
 
 // All three fields REQUIRED (§6.1): a missing one is rejected, not defaulted, so a peer cannot bypass
 // version negotiation by omission.

@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { MAX_SAFE_INTEGER } from './canonical';
 
 // The only spec version defined by this contract; a mismatch is a hard validation error.
-export const SPEC_VERSION = 'auditable-mcp/0.1.1' as const;
+export const SPEC_VERSION = 'auditable-mcp/0.2' as const;
 
 // Patterns copied verbatim from the normative JSON Schema (spec/schema/).
 export const UUID_PATTERN =
@@ -90,30 +90,47 @@ export type TargetResource = z.infer<typeof targetResourceSchema>;
  * both levels; the signing layer populates them. `reason` is pinned to the Tier-1 abort codes and is
  * required exactly when `outcome` is `aborted` (§7.6, §7.2).
  */
+// Shared event fields; `spec_version` is added per schema below. Field order does not affect
+// validation or canonicalization (hashing uses the raw event, not the parsed object).
+const auditEventFields = {
+  id: z.string().regex(uuidRegex),
+  ts: z.string().regex(datetimeRegex),
+  call_id: z.string().min(1),
+  traceparent: z.string().optional(),
+  action_type: z.string().min(1),
+  mutates: z.boolean(),
+  egress: z.boolean(),
+  target_resource: targetResourceSchema,
+  outcome: z.enum(Outcome),
+  reason: abortReasonSchema.optional(),
+  action_context: z.record(z.string(), z.unknown()).optional(),
+  action_context_hash: z.string().regex(contextHashRegex).optional(),
+  signer_seq: z.int().min(0).max(MAX_SAFE_INTEGER).optional(),
+  key_id: z.string().min(1).optional(),
+  signature: z.string().regex(signatureRegex).optional(),
+} as const;
+
 export const auditEventSchema = z
-  .strictObject({
-    id: z.string().regex(uuidRegex),
-    spec_version: z.literal(SPEC_VERSION),
-    ts: z.string().regex(datetimeRegex),
-    call_id: z.string().min(1),
-    traceparent: z.string().optional(),
-    action_type: z.string().min(1),
-    mutates: z.boolean(),
-    egress: z.boolean(),
-    target_resource: targetResourceSchema,
-    outcome: z.enum(Outcome),
-    reason: abortReasonSchema.optional(),
-    action_context: z.record(z.string(), z.unknown()).optional(),
-    action_context_hash: z.string().regex(contextHashRegex).optional(),
-    signer_seq: z.int().min(0).max(MAX_SAFE_INTEGER).optional(),
-    key_id: z.string().min(1).optional(),
-    signature: z.string().regex(signatureRegex).optional(),
-  })
+  .strictObject({ spec_version: z.literal(SPEC_VERSION), ...auditEventFields })
   .refine((event) => event.outcome !== Outcome.ABORTED || event.reason !== undefined, {
     message: 'an aborted outcome requires a reason',
     path: ['reason'],
   });
 export type AuditEvent = z.infer<typeof auditEventSchema>;
+
+// Published spec versions a verifier accepts when reading a sealed ledger. Emission and ingest stay
+// pinned to the current SPEC_VERSION (auditEventSchema, §6.1); a verifier reading a stored ledger must
+// accept records sealed under an earlier published version, since their bytes and hash chain are
+// immutable evidence.
+export const KNOWN_SPEC_VERSIONS = ['auditable-mcp/0.1', 'auditable-mcp/0.1.1', 'auditable-mcp/0.2'] as const;
+
+// Read-lenient verification view of a sealed event: accepts any published `spec_version`.
+export const sealedAuditEventSchema = z
+  .strictObject({ spec_version: z.enum(KNOWN_SPEC_VERSIONS), ...auditEventFields })
+  .refine((event) => event.outcome !== Outcome.ABORTED || event.reason !== undefined, {
+    message: 'an aborted outcome requires a reason',
+    path: ['reason'],
+  });
 
 /** An audit capability exchanged during negotiation: the version, level, and attempt mode (§6.1). */
 export const auditCapabilitySchema = z.strictObject({
@@ -159,17 +176,8 @@ export const attemptResponseSchema = z.discriminatedUnion('status', [
 ]);
 export type AttemptResponse = z.infer<typeof attemptResponseSchema>;
 
-/**
- * Return the first structural validation message for `event` as an AuditEvent, or null if valid.
- *
- * This is the shared shape check used at the host ingest boundary (§7.1) and by the ledger verifier.
- * It enforces the event's structure, types, required fields, closed shape, and the pattern / range /
- * enum constraints copied from the normative JSON Schema.
- *
- * @returns null if valid, otherwise the first error as `<path>: <message>`.
- */
-export function firstValidationError(event: unknown): string | null {
-  const result = auditEventSchema.safeParse(event);
+function firstError(schema: z.ZodType, event: unknown): string | null {
+  const result = schema.safeParse(event);
   if (result.success) {
     return null;
   }
@@ -179,4 +187,29 @@ export function firstValidationError(event: unknown): string | null {
   }
   const location = issue.path.join('.');
   return location ? `${location}: ${issue.message}` : issue.message;
+}
+
+/**
+ * Return the first structural validation message for `event` as a wire AuditEvent, or null if valid.
+ *
+ * The strict ingest/emission shape check (§7.1): `spec_version` must equal the current `SPEC_VERSION`.
+ * The ledger verifier uses `firstSealedValidationError` instead, which accepts any published version.
+ *
+ * @returns null if valid, otherwise the first error as `<path>: <message>`.
+ */
+export function firstValidationError(event: unknown): string | null {
+  return firstError(auditEventSchema, event);
+}
+
+/**
+ * Like `firstValidationError`, but read-lenient on `spec_version` (ledger verification).
+ *
+ * A sealed record is immutable evidence, so a verifier reading a stored ledger accepts records sealed
+ * under any published `spec_version` (`KNOWN_SPEC_VERSIONS`); ingest and emission stay pinned to the
+ * current version.
+ *
+ * @returns null if valid, otherwise the first error as `<path>: <message>`.
+ */
+export function firstSealedValidationError(event: unknown): string | null {
+  return firstError(sealedAuditEventSchema, event);
 }
