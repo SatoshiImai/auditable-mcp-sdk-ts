@@ -1,6 +1,6 @@
 {
   "name": "auditable-mcp-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Auditable MCP SDK — a protocol machine for tool self-attestation into a tamper-evident host ledger (auditable-mcp/0.1.1).",
   "type": "module",
   "license": "MIT",
@@ -46,6 +46,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepare": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

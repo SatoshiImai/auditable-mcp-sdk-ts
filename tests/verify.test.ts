@@ -3,7 +3,10 @@ import type { SealedRecord } from '../src/ledger';
 import { Ledger } from '../src/ledger';
 import { firstSealedValidationError, firstValidationError } from '../src/models';
 import {
+  DEFAULT_ADAPTER,
   DIGEST_MISMATCH,
+  ORPHANED_OUTCOME,
+  PRINCIPAL_MISMATCH,
   RECORD_HASH_MISMATCH,
   type RecordAdapter,
   SCHEMA_INVALID,
@@ -86,6 +89,108 @@ describe('verifyLedger reaches into an envelope via an adapter', () => {
     );
     const kinds = verifyLedger(ledger.records()).issues.map((i) => i.kind);
     expect(kinds).toContain(SCHEMA_INVALID);
+  });
+});
+
+describe('verifyChain exempts a record that names no call from correlation', () => {
+  it('does not flag records whose idOf is undefined (a prompt, reasoning) as orphaned outcomes', () => {
+    const ledger = new Ledger('tenant-a');
+    ledger.append({ kind: 'prompt', text: 'prompt 1' }, '2026-07-15T00:00:01.000Z');
+    ledger.append({ kind: 'reasoning', text: 'reasoning 2' }, '2026-07-15T00:00:02.000Z');
+    ledger.append({ kind: 'reasoning', text: 'reasoning 3' }, '2026-07-15T00:00:03.000Z');
+    const adapter: RecordAdapter = { ...DEFAULT_ADAPTER, idOf: () => undefined, isAttempt: () => false };
+    const report = verifyChain(ledger.records(), undefined, adapter);
+    expect(report.ok).toBe(true);
+    expect(report.issues).toHaveLength(0);
+  });
+
+  it('does not seed a wildcard: a real orphan whose id is present is still reported', () => {
+    const ledger = new Ledger('tenant-a');
+    ledger.append({ kind: 'prompt' }, '2026-07-15T00:00:01.000Z');
+    ledger.append({ kind: 'tool', call: 'call-1' }, '2026-07-15T00:00:02.000Z');
+    const adapter: RecordAdapter = { ...DEFAULT_ADAPTER, idOf: (event) => event.call, isAttempt: () => false };
+    const report = verifyChain(ledger.records(), undefined, adapter);
+    expect(report.issues.map((i) => i.kind)).toEqual([ORPHANED_OUTCOME]);
+  });
+});
+
+function boundPair(principalAttempt: string, principalOutcome: string): Ledger {
+  const eid = '00000000-0000-4000-8000-000000000001';
+  const ledger = new Ledger('tenant-a');
+  ledger.append(amcpEvent(eid, 'attempted', { principal_id: principalAttempt }), '2026-07-15T00:00:01.000Z');
+  ledger.append(amcpEvent(eid, 'success', { principal_id: principalOutcome }), '2026-07-15T00:00:02.000Z');
+  return ledger;
+}
+
+describe('verifyChain matches the governed identity against expectedPrincipal', () => {
+  const withPrincipal: RecordAdapter = { ...DEFAULT_ADAPTER, principalOf: (event) => event.principal_id };
+
+  it('is clean when every record names the expected principal', () => {
+    const report = verifyChain(boundPair('tenant-a', 'tenant-a').records(), undefined, withPrincipal, 'tenant-a');
+    expect(report.ok).toBe(true);
+    expect(report.issues).toHaveLength(0);
+  });
+
+  it('flags a single foreign record principal-mismatch on its seq (per-record)', () => {
+    const report = verifyChain(boundPair('tenant-a', 'tenant-b').records(), undefined, withPrincipal, 'tenant-a');
+    expect(report.ok).toBe(false);
+    expect(report.issues.map((i) => [i.seq, i.kind])).toEqual([[1, PRINCIPAL_MISMATCH]]);
+  });
+
+  it('flags a transplanted chain principal-mismatch throughout (hash and chain still pass)', () => {
+    const report = verifyChain(boundPair('tenant-a', 'tenant-a').records(), undefined, withPrincipal, 'tenant-b');
+    expect(report.ok).toBe(false);
+    expect(report.issues.map((i) => i.kind)).toEqual([PRINCIPAL_MISMATCH, PRINCIPAL_MISMATCH]);
+  });
+
+  it('fails closed when a record binds no identity but a principal is expected', () => {
+    const report = verifyChain(boundPair('tenant-a', 'tenant-a').records(), undefined, DEFAULT_ADAPTER, 'tenant-a');
+    expect(report.ok).toBe(false);
+    expect(report.issues.every((i) => i.kind === PRINCIPAL_MISMATCH)).toBe(true);
+  });
+
+  it('skips the check when expectedPrincipal is omitted (backward compatible)', () => {
+    expect(verifyChain(boundPair('tenant-a', 'tenant-a').records(), undefined, withPrincipal).ok).toBe(true);
+  });
+
+  it('matches the principal through an envelope in verifyLedger; a transplant fails', () => {
+    const eid = '00000000-0000-4000-8000-000000000001';
+    const ledger = new Ledger('tenant-a');
+    ledger.append(
+      { schema: 'sep3004', principal_id: 'tenant-a', amcp: amcpEvent(eid, 'attempted') },
+      '2026-07-15T00:00:01.000Z',
+    );
+    ledger.append(
+      { schema: 'sep3004', principal_id: 'tenant-a', amcp: amcpEvent(eid, 'success') },
+      '2026-07-15T00:00:02.000Z',
+    );
+    const adapter: RecordAdapter = {
+      idOf: (event) => (event.amcp as Record<string, unknown>).id,
+      isAttempt: (event) => (event.amcp as Record<string, unknown>).outcome === 'attempted',
+      eventOf: (event) => event.amcp,
+      principalOf: (event) => event.principal_id,
+    };
+    expect(verifyLedger(ledger.records(), undefined, adapter, 'tenant-a').ok).toBe(true);
+    const transplant = verifyLedger(ledger.records(), undefined, adapter, 'tenant-b');
+    expect(transplant.issues.map((i) => i.kind)).toEqual([PRINCIPAL_MISMATCH, PRINCIPAL_MISMATCH]);
+  });
+
+  it('treats principal equality as strict (case- and whitespace-sensitive)', () => {
+    const report = verifyChain(boundPair('Tenant-A', 'tenant-a ').records(), undefined, withPrincipal, 'tenant-a');
+    expect(report.issues.map((i) => [i.seq, i.kind])).toEqual([
+      [0, PRINCIPAL_MISMATCH],
+      [1, PRINCIPAL_MISMATCH],
+    ]);
+  });
+
+  it('reports principal-mismatch alongside record-hash-mismatch (neither masks the other)', () => {
+    const src = boundPair('tenant-a', 'tenant-a').records();
+    const records = src.map((r) => ({ ...r, event: { ...r.event } }));
+    (records[1] as { event: Record<string, unknown> }).event.outcome = 'failed';
+    const report = verifyChain(records, undefined, withPrincipal, 'tenant-b');
+    const kinds = new Set(report.issues.map((i) => i.kind));
+    expect(kinds.has(RECORD_HASH_MISMATCH)).toBe(true);
+    expect(kinds.has(PRINCIPAL_MISMATCH)).toBe(true);
   });
 });
 
