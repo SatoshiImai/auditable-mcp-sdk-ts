@@ -26,6 +26,11 @@ export const HOST_UNAVAILABLE = 'host-unavailable';
 // here (a distinct code space, disambiguated by the anomaly `kind` field).
 export const RECORD_HASH_MISMATCH = 'record-hash-mismatch';
 export const DIGEST_MISMATCH = 'digest-mismatch';
+// SDK-specific: defined by neither a-MCP §7.6 nor SEP-3004. SEP-3004 binds `principal_id` in its
+// hashed core and detects tampering of it (§2.6 event_hash recompute), but never compares that identity
+// against the principal a partition is expected to hold; a-MCP delegates identity to the envelope
+// entirely. This kind flags that comparison - the detection half neither spec defines.
+export const PRINCIPAL_MISMATCH = 'principal-mismatch';
 export const SEQ_GAP = 'seq-gap';
 export const SIGNER_SEQ_GAP = 'signer-seq-gap';
 export const ORPHANED_OUTCOME = 'orphaned-outcome';
@@ -45,6 +50,7 @@ export type Tier1Code =
   | typeof HOST_UNAVAILABLE
   | typeof RECORD_HASH_MISMATCH
   | typeof DIGEST_MISMATCH
+  | typeof PRINCIPAL_MISMATCH
   | typeof SEQ_GAP
   | typeof SIGNER_SEQ_GAP
   | typeof ORPHANED_OUTCOME

@@ -21,6 +21,7 @@ export const SCHEMA_INVALID = reasons.SCHEMA_INVALID;
 export const SEQ_GAP = reasons.SEQ_GAP;
 export const RECORD_HASH_MISMATCH = reasons.RECORD_HASH_MISMATCH;
 export const DIGEST_MISMATCH = reasons.DIGEST_MISMATCH;
+export const PRINCIPAL_MISMATCH = reasons.PRINCIPAL_MISMATCH;
 export const ORPHANED_OUTCOME = reasons.ORPHANED_OUTCOME;
 
 /** A single verification failure. `seq` is null for whole-ledger issues (e.g. digest mismatch). */
@@ -39,12 +40,12 @@ export interface VerifyReport {
 }
 
 /**
- * How the verifier reads a-MCP correlation fields and the embedded event out of a sealed record.
+ * How the verifier reads a-MCP correlation fields, the embedded event, and the governed identity.
  *
  * The defaults (`DEFAULT_ADAPTER`) read a bare, top-level a-MCP event. A caller that seals a-MCP
  * records inside another envelope (e.g. SEP-3004) provides accessors that reach into it, so the
- * verifier can correlate and schema-check the enveloped event without the SDK importing any specific
- * envelope shape.
+ * verifier can correlate, schema-check, and principal-match the enveloped event without the SDK
+ * importing any specific envelope shape.
  */
 export interface RecordAdapter {
   /** Extract the correlation key that pairs an attempt with its terminal outcome. */
@@ -53,35 +54,51 @@ export interface RecordAdapter {
   isAttempt: (event: Record<string, unknown>) => boolean;
   /** Extract the embedded a-MCP event that `verifyLedger` schema-checks. */
   eventOf: (event: Record<string, unknown>) => unknown;
+  /**
+   * Extract the governed identity a record is attributed to, compared against `expectedPrincipal`.
+   * Optional: a bare a-MCP event binds no identity (attributing a record to a principal is the
+   * envelope's concern, not a-MCP's). A deployment that seals records inside an identity-binding
+   * envelope (e.g. SEP-3004, whose protected core carries `principal_id`) reads that identity here.
+   * Normalization (e.g. tenant hierarchy) belongs here, so the comparison stays a strict equality.
+   */
+  principalOf?: (event: Record<string, unknown>) => unknown;
 }
 
 /**
- * The sealed event is itself a bare, top-level a-MCP event. Spread it to override only what you need:
+ * The sealed event is itself a bare, top-level a-MCP event, binding no governed identity. Frozen so
+ * the process-wide default cannot be mutated; spread it to override only what you need:
  * `{ ...DEFAULT_ADAPTER, idOf: (e) => (e.sep3004 as { id: unknown }).id }`.
  */
-export const DEFAULT_ADAPTER: RecordAdapter = {
-  idOf: (event) => event[fields.ID],
-  isAttempt: (event) => event[fields.OUTCOME] === Outcome.ATTEMPTED,
-  eventOf: (event) => event,
-};
+export const DEFAULT_ADAPTER: RecordAdapter = Object.freeze({
+  idOf: (event: Record<string, unknown>) => event[fields.ID],
+  isAttempt: (event: Record<string, unknown>) => event[fields.OUTCOME] === Outcome.ATTEMPTED,
+  eventOf: (event: Record<string, unknown>) => event,
+  principalOf: () => undefined,
+});
 
 /**
  * Verify chain integrity alone, independent of the event vocabulary (§8.3).
  *
  * Checks sequence order, previous-hash linkage, record-hash recomputation, attempt/outcome
- * correlation, and (with `anchoredDigest`) the anchored-digest compare. This is the tamper-evidence
- * guarantee for any events sealed through `Ledger`; it never inspects the event schema.
+ * correlation, the principal binding (when `expectedPrincipal` is set), and (with `anchoredDigest`)
+ * the anchored-digest compare. This is the tamper-evidence guarantee for any events sealed through
+ * `Ledger`; it never inspects the event schema.
  *
  * @param records The sealed records in append order (from a `Ledger` or reloaded storage).
  * @param anchoredDigest An out-of-band anchored tail digest to compare against, if available (§8.3).
  * @param adapter How to read the correlation key and attempt flag from each sealed record. Defaults to
  *   a bare top-level a-MCP event; inject accessors to correlate records sealed inside an envelope.
+ * @param expectedPrincipal When set, every record's `adapter.principalOf` is compared against it
+ *   (strict equality); a mismatch or an absent identity is flagged `principal-mismatch`. This is an SDK
+ *   check, not an a-MCP anomaly: it detects a transplant only for records sealed in an identity-binding
+ *   envelope. Omit to skip.
  * @returns A report; `ok` is true only when no issues were found.
  */
 export function verifyChain(
   records: SealedRecord[],
   anchoredDigest?: string,
   adapter: RecordAdapter = DEFAULT_ADAPTER,
+  expectedPrincipal?: unknown,
 ): VerifyReport {
   const issues: VerifyIssue[] = [];
   const attemptedIds = new Set<unknown>();
@@ -125,6 +142,16 @@ export function verifyChain(
       });
     }
 
+    // Per-record, fail-closed (an absent identity !== the expected one): a valid chain transplanted
+    // under the wrong principal passes hash + chain but fails this.
+    if (expectedPrincipal !== undefined && adapter.principalOf?.(event) !== expectedPrincipal) {
+      issues.push({
+        seq: record.seq,
+        kind: PRINCIPAL_MISMATCH,
+        detail: `record principal does not match expected ${String(expectedPrincipal)}`,
+      });
+    }
+
     prevRecomputed = recomputed;
   }
 
@@ -152,14 +179,17 @@ export function verifyChain(
  * @param anchoredDigest An out-of-band anchored tail digest to compare against, if available (§8.3).
  * @param adapter How to read the correlation fields and extract the embedded a-MCP event. Defaults to
  *   a bare top-level a-MCP event; inject `eventOf` to schema-check an event sealed inside an envelope.
+ * @param expectedPrincipal When set, each record's `adapter.principalOf` is compared against it, else
+ *   `principal-mismatch` (an SDK check); forwarded to `verifyChain`.
  * @returns A report; `ok` is true only when no issues were found.
  */
 export function verifyLedger(
   records: SealedRecord[],
   anchoredDigest?: string,
   adapter: RecordAdapter = DEFAULT_ADAPTER,
+  expectedPrincipal?: unknown,
 ): VerifyReport {
-  const report = verifyChain(records, anchoredDigest, adapter);
+  const report = verifyChain(records, anchoredDigest, adapter, expectedPrincipal);
   const schemaIssues: VerifyIssue[] = [];
   for (const record of records) {
     const structural = firstSealedValidationError(adapter.eventOf(record.event));
