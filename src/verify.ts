@@ -59,6 +59,13 @@ export interface VerifyReport {
 export type WitnessChecker = (hostKeyId: string, signature: string, payload: Uint8Array) => boolean;
 
 /**
+ * Verifies a sealed Level-2 event's own `signature` against the out-of-band key registry (§7.4).
+ *
+ * Synchronous for the same reason as `WitnessChecker`; `KeyRegistryVerifier.check` implements it.
+ */
+export type SignatureChecker = (event: Record<string, unknown>) => boolean;
+
+/**
  * How the verifier reads a-MCP correlation fields, the embedded event, and the governed identity.
  *
  * The defaults (`DEFAULT_ADAPTER`) read a bare, top-level a-MCP event. A caller that seals a-MCP
@@ -124,12 +131,14 @@ export function verifyChain(
   adapter: RecordAdapter = DEFAULT_ADAPTER,
   expectedPrincipal?: unknown,
   witnessChecker?: WitnessChecker,
+  signatureChecker?: SignatureChecker,
 ): VerifyReport {
   const issues: VerifyIssue[] = [];
   const attemptedIds = new Set<unknown>();
   let prevRecomputed = GENESIS_HASH;
   let witnessUnchecked = false;
   let l2Unchecked = false;
+  const lastSignerSeq = new Map<string, number>();
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -191,13 +200,31 @@ export function verifyChain(
     // Read through the adapter: a record sealed inside an envelope (e.g. SEP-3004) keeps the a-MCP
     // event, and its signature, inside it, so a top-level lookup would miss exactly the deployment
     // §10.10 recommends and report a complete verification of signatures nobody checked.
-    const inner = adapter.eventOf(event);
-    if (
-      inner !== null &&
-      typeof inner === 'object' &&
-      (inner as Record<string, unknown>)[fields.SIGNATURE] !== undefined
-    ) {
+    const inner = adapter.eventOf(event) as Record<string, unknown> | null;
+    const signed = inner !== null && typeof inner === 'object' && inner[fields.SIGNATURE] !== undefined;
+    if (signed && signatureChecker === undefined) {
       l2Unchecked = true;
+    } else if (signed && signatureChecker !== undefined && inner !== null && !signatureChecker(inner)) {
+      issues.push({ seq: record.seq, kind: reasons.SIGNATURE_INVALID, detail: 'event signature does not verify' });
+    }
+
+    // §7.4 / §11.4: a forward gap in a partition-bound `key_id` may mark a suppressed event. It is
+    // computable from the records alone - no registry - so a verifier that omits it is silently
+    // dropping the one suppression signal the ledger carries.
+    if (inner !== null && typeof inner === 'object') {
+      const keyId = inner[fields.KEY_ID];
+      const signerSeq = inner[fields.SIGNER_SEQ];
+      if (typeof keyId === 'string' && typeof signerSeq === 'number') {
+        const last = lastSignerSeq.get(keyId);
+        if (last !== undefined && signerSeq > last + 1) {
+          issues.push({
+            seq: record.seq,
+            kind: reasons.SIGNER_SEQ_GAP,
+            detail: `signer_seq jumped ${last} -> ${signerSeq} for key_id ${keyId}`,
+          });
+        }
+        lastSignerSeq.set(keyId, signerSeq);
+      }
     }
 
     // Witness determination (§11.4): by the signature alone, never inferred from another field.
@@ -276,8 +303,9 @@ export function verifyLedger(
   adapter: RecordAdapter = DEFAULT_ADAPTER,
   expectedPrincipal?: unknown,
   witnessChecker?: WitnessChecker,
+  signatureChecker?: SignatureChecker,
 ): VerifyReport {
-  const report = verifyChain(records, anchoredDigest, adapter, expectedPrincipal, witnessChecker);
+  const report = verifyChain(records, anchoredDigest, adapter, expectedPrincipal, witnessChecker, signatureChecker);
   const schemaIssues: VerifyIssue[] = [];
   for (const record of records) {
     const structural = firstSealedValidationError(adapter.eventOf(record.event));

@@ -105,6 +105,7 @@ export { type AuditEndpoint, type AuditTransport, accept, reject, unavailable } 
 export {
   DEFAULT_ADAPTER,
   type RecordAdapter,
+  type SignatureChecker,
   type VerifyIssue,
   type VerifyReport,
   verifyChain,

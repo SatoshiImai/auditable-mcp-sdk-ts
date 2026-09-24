@@ -88,7 +88,14 @@ export class KeyRegistryVerifier implements SignatureVerifier {
     this.#ecdsaVerify = options.ecdsaVerify ?? nobleEcdsaVerify;
   }
 
+  /** Return true if the event's own Level-2 signature verifies (synchronous, §7.4). */
+  readonly check = (event: Record<string, unknown>): boolean => this.rejectReason(event) === null;
+
   async verify(event: Record<string, unknown>): Promise<RejectReason | null> {
+    return this.rejectReason(event);
+  }
+
+  private rejectReason(event: Record<string, unknown>): RejectReason | null {
     const keyId = event[fields.KEY_ID];
     const entry = typeof keyId === 'string' ? this.#registry.get(keyId) : undefined;
     if (entry === undefined) {

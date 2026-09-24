@@ -381,3 +381,62 @@ describe('the overview review’s findings (§10.10, §11.4)', () => {
     expect(report.unchecked).toEqual(['witness']);
   });
 });
+
+describe('the stream-and-diffusion pass’s findings (§7.4, §11.3, §11.4)', () => {
+  function l2Record(seq: number, signerSeq: number, previous: string, keyId = 'k1'): SealedRecord {
+    const event = {
+      ...makeAttempt(`00000000-0000-4000-8000-00000000000${seq + 1}`),
+      key_id: keyId,
+      signer_seq: signerSeq,
+      signature: 'ZmFrZQ==',
+    };
+    const hostTs = `2026-07-15T00:00:${String(seq + 2).padStart(2, '0')}.000Z`;
+    return {
+      event,
+      seq,
+      host_ts: hostTs,
+      previous_hash: previous,
+      record_hash: computeRecordHash(event, seq, hostTs, previous),
+    };
+  }
+
+  it('refuses a Level-2 session that switches Polluted Stop off (§11.3)', () => {
+    const endpoint = new CannedEndpoint(canned());
+    const signer = { sign: async (event: Record<string, unknown>) => event };
+    expect(() => new AmcpSession(new InProcessTransport(endpoint), 'call-1', { signer, pollutedStop: false })).toThrow(
+      /Polluted Stop/,
+    );
+  });
+
+  it('reports a forward signer_seq gap (§7.4, §11.4)', () => {
+    const first = l2Record(0, 1, '0'.repeat(64));
+    const report = verifyLedger([first, l2Record(1, 5, first.record_hash)]);
+    expect(report.issues.map((issue) => issue.kind)).toContain('signer-seq-gap');
+  });
+
+  it('does not call contiguous signer_seqs a gap (§7.4)', () => {
+    const first = l2Record(0, 1, '0'.repeat(64));
+    const report = verifyLedger([first, l2Record(1, 2, first.record_hash)]);
+    expect(report.issues.map((issue) => issue.kind)).not.toContain('signer-seq-gap');
+  });
+
+  it('performs Level-2 validation when given a checker (§11.4)', () => {
+    const report = verifyLedger(
+      [l2Record(0, 1, '0'.repeat(64))],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => false,
+    );
+    expect(report.ok).toBe(false);
+    expect(report.issues.map((issue) => issue.kind)).toContain('signature-invalid');
+    expect(report.unchecked).toEqual([]);
+  });
+
+  it('names the Level-2 records unchecked without one (§11.4)', () => {
+    const report = verifyLedger([l2Record(0, 1, '0'.repeat(64))]);
+    expect(report.ok).toBe(true);
+    expect(report.unchecked).toEqual(['level-2-signature']);
+  });
+});

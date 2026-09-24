@@ -149,6 +149,12 @@ export class AmcpSession {
     if (options.requireWitness === true && options.witnessVerifier === undefined) {
       throw new Error('requireWitness needs a WitnessVerifier');
     }
+    // §11.3 makes Polluted Stop REQUIRED under Level 2 and OPTIONAL under Level 1. A signer is this
+    // SDK's Level-2 marker, so switching the check off while signing is a configuration the
+    // specification does not allow, and the default already does the right thing.
+    if (options.pollutedStop === false && options.signer !== undefined) {
+      throw new Error('Polluted Stop is REQUIRED under Level 2 (§7.2, §11.3)');
+    }
     this._pollutedStop = options.pollutedStop ?? options.signer !== undefined;
     this._witnessVerifier = options.witnessVerifier;
     this._requireWitness = options.requireWitness ?? false;
