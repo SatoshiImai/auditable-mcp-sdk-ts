@@ -36,7 +36,10 @@ export const RECORD_HASH = 'record_hash';
 export const HOST_TS = 'host_ts';
 export const PREVIOUS_HASH = 'previous_hash';
 export const RETRYABLE = 'retryable';
+export const HOST_SIGNATURE = 'host_signature';
+export const HOST_KEY_ID = 'host_key_id';
 
 // Audit capability (§6.1).
 export const LEVEL = 'level';
 export const ATTEMPT = 'attempt';
+export const WITNESS = 'witness';

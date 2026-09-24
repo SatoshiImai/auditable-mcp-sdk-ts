@@ -28,18 +28,24 @@ export {
 export { type Clock, nowIso, SystemClock } from './clock';
 export type { EcdsaVerify, Ed25519Engine, Ed25519KeyPair } from './crypto/engine';
 export { Posture, transportFor, UnnegotiatedSessionError } from './degradation';
-export { computeRecordHash, GENESIS_HASH } from './hashing';
+export {
+  computeRecordHash,
+  GENESIS_HASH,
+  witnessPayload,
+} from './hashing';
 export {
   type AuditCapabilityInput,
   AuditHost,
   type AuditHostOptions,
   type IntegrityAnomaly,
   type SignatureVerifier,
+  type WitnessSigner,
 } from './host';
 export { InProcessTransport } from './in-process';
 export {
   BoundaryObserver,
   Ed25519Signer,
+  Ed25519WitnessSigner,
   type EgressObservation,
   generateToolKey,
   KeyRegistry,
@@ -51,8 +57,10 @@ export {
   signaturePayload,
   signEvent,
   type ToolKey,
+  verifyDetachedSignature,
   verifyEcdsaSignature,
   verifyEd25519Signature,
+  WitnessRegistryVerifier,
 } from './l2';
 export { Ledger, type SealedRecord } from './ledger';
 export {
@@ -80,6 +88,7 @@ export {
   targetResourceSchema,
   type UnavailableResponse,
   unavailableResponseSchema,
+  Witness,
 } from './models';
 export {
   type ActionOptions,
@@ -89,6 +98,7 @@ export {
   type Deps,
   type EventSigner,
   SystemDeps,
+  type WitnessVerifier,
 } from './session';
 export { InMemoryLedgerRepository, type LedgerRepository, RepositoryError } from './storage';
 export { type AuditEndpoint, type AuditTransport, accept, reject, unavailable } from './transport';
@@ -99,6 +109,7 @@ export {
   type VerifyReport,
   verifyChain,
   verifyLedger,
+  type WitnessChecker,
 } from './verify';
 export { type AuditSpec, withAudit } from './with-audit';
 
