@@ -210,15 +210,20 @@ abstract class FrameSeam implements McpTransport {
 
   /** Send one JSON-RPC message for this seam's own traffic. One message per frame, never an array (§6). */
   protected async sendFrame(frame: JsonRpcFrame, relatedRequestId?: string | number): Promise<void> {
+    // A frame this seam answers itself retires the call too. The Python port gets this from its
+    // outbound pump, which every message passes through; here the seam's own sends bypass `send`.
+    this.retire(frame);
     await this.inner.send(frame, relatedRequestId === undefined ? undefined : { relatedRequestId });
   }
 
   private async receive(message: JsonRpcFrame, extra?: unknown): Promise<void> {
-    if (isRequest(message)) {
-      this.#live.set(String(message.id), message.id);
-    }
     if (await this.intercept(message)) {
       return;
+    }
+    // Only what reaches the session: a frame this seam answered itself is not a call anything still
+    // owes an answer to, and keeping it would grow this map for the life of the connection.
+    if (isRequest(message)) {
+      this.#live.set(String(message.id), message.id);
     }
     this.#sessionMessage?.(message, extra);
   }

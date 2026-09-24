@@ -285,6 +285,13 @@ Three §6 obligations live in this entry point and nowhere else: an attempt is n
 for a decision is bounded and fails closed when it expires, and nothing at all is sent in a session
 that was not audit-negotiated.
 
+### The walk
+
+`walk/tool-server.ts` is this SDK's tool served over real stdio, driven by the Python SDK's
+`walk/run.py` from a host in another process and another language. That is where the
+interoperability claim is checked rather than asserted: check both ports out side by side and run
+`make walk CASE=crosslang` in the Python repo.
+
 ## Conformance
 
 The normative JSON Schema and golden vectors are vendored under [`spec/`](spec/) from the
