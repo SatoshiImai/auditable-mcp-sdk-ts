@@ -34,7 +34,7 @@ import {
 } from './models';
 import { Mutex } from './mutex';
 import * as reasons from './reasons';
-import type { AuditTransport } from './transport';
+import { AmcpUsageError, type AuditTransport } from './transport';
 
 /**
  * Stamps an event with `key_id`, `sequence`, and `signature` (Level 2, §5, §8.2).
@@ -231,12 +231,23 @@ export class AmcpSession {
     let response: AttemptResponse;
     try {
       // §7.4: the numbering and the emission are one section, so two concurrent actions under one
-      // key cannot leave in the order their signing happened to finish in.
+      // key cannot leave in the order their signing happened to finish in. The section spans the
+      // host's answer, not just the send: on a transport that carries each call on its own stream
+      // (Streamable HTTP, §6), two frames sent in order have no mutual arrival order, so the
+      // previous attempt has to be acknowledged before the next one is emitted. It costs the
+      // overlap of the wire latency under Level 2, and it is what makes the ordering hold on a
+      // transport that does not carry one.
       ({ attempt, response } = await this.#numbering.run(async () => {
         const numbered = await action._build(Outcome.ATTEMPTED);
         return { attempt: numbered, response: await this._transport.sendAttempt(numbered) };
       }));
-    } catch {
+    } catch (error) {
+      if (error instanceof AmcpUsageError) {
+        // Not a failure to record: the SDK was used against its own contract, and no audit outcome
+        // describes that. Filing `host-unavailable` for it would blame the host for the integrator's
+        // error and bury the one thing they need to see (§6.2).
+        throw error;
+      }
       // §6/§11.3: a JSON-RPC transport fault (vs an `unavailable` result) is handled exactly as
       // `unavailable` — fail closed. Emit a fail-closed aborted outcome for observability, best-effort
       // so a broken transport cannot mask the abort itself.

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
 import { AmcpAbortedError, AmcpSession } from '../src/session';
-import type { AuditTransport } from '../src/transport';
+import { AmcpUsageError, type AuditTransport } from '../src/transport';
 import { verifyLedger } from '../src/verify';
 import { withAudit } from '../src/with-audit';
 import { FixedDeps, L2_CAPABILITY, MonotonicClock, OkVerifier, StubSigner } from './helpers';
@@ -205,5 +205,30 @@ describe('a transport fault (§6, §11.3)', () => {
         await using _action = await session.action(spec.actionType, spec.target, spec);
       })(),
     ).rejects.toBeInstanceOf(AmcpAbortedError);
+  });
+});
+
+/** A transport that refuses because the SDK's own contract was broken, not because the wire is. */
+class MisusedTransport extends FaultyTransport {
+  override async sendAttempt(): Promise<never> {
+    throw new AmcpUsageError('this session is not audit-negotiated');
+  }
+}
+
+describe('misuse is not a transport fault (§6.2, §11.3)', () => {
+  it('reaches the caller instead of becoming host-unavailable', async () => {
+    const transport = new MisusedTransport();
+    const session = new AmcpSession(transport, 'call-1', { deps: new FixedDeps() });
+    await expect(
+      (async () => {
+        await using _action = await session.action(
+          'db.read',
+          { kind: 'table', ref: 'customers' },
+          { mutates: false, egress: false },
+        );
+      })(),
+    ).rejects.toBeInstanceOf(AmcpUsageError);
+    // Blaming the host for the integrator's wiring buries the one thing they need to see.
+    expect(transport.outcomes).toHaveLength(0);
   });
 });

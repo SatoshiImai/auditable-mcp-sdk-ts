@@ -25,6 +25,21 @@ import {
   type UnavailableResponse,
 } from './models';
 
+/**
+ * This SDK was driven into a state its own contract forbids.
+ *
+ * Distinct from a transport fault: a fault is a failure to record, which §7.2 turns into an
+ * `aborted` outcome and a fail-closed halt, whereas this is an integrator error that no audit
+ * outcome describes. The session's fail-closed catch rethrows it rather than filing an `aborted`
+ * record that blames the host for it (§6.2, §11.3).
+ */
+export class AmcpUsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AmcpUsageError';
+  }
+}
+
 /** Build a Verifiable Accept carrying the fields the tool needs for Polluted Stop (§7.1). */
 export function accept(
   seq: number,

@@ -32,7 +32,7 @@
 import type { NegotiationResult } from '../capability';
 import { negotiate } from '../capability';
 import { type AttemptResponse, type AuditCapability, attemptResponseSchema } from '../models';
-import { type AuditEndpoint, type AuditTransport, unavailable } from '../transport';
+import { AmcpUsageError, type AuditEndpoint, type AuditTransport, unavailable } from '../transport';
 import { capabilityOf, declareInto, type WithExtensions } from './declaration';
 
 /** The literal method names of §6. `params` IS the audit event object, never a wrapper. */
@@ -82,7 +82,7 @@ export interface McpTransport {
 }
 
 /** The binding was driven into a state §6 does not define. */
-export class McpBindingError extends Error {
+export class McpBindingError extends AmcpUsageError {
   constructor(message: string) {
     super(message);
     this.name = 'McpBindingError';

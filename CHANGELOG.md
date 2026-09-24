@@ -28,6 +28,10 @@ stay symmetric by design.
   since `audit/outcome` has no response channel. `AmcpSession` takes a `witnessVerifier`
   (`WitnessRegistryVerifier`) and enforces §7.2's precedence. `SealedRecord` carries
   `host_signature` / `host_key_id`, absent when unwitnessed.
+- **`AmcpUsageError`** separates an integrator error from a transport fault. The session's
+  fail-closed catch was converting the MCP binding's own refusals - an unnegotiated send, a
+  handshake not seen - into `host-unavailable`, filing an `aborted` record that blamed the host for
+  the integrator's wiring. It now rethrows them.
 - **Atomic numbering (§7.4).** `AmcpSession` holds one section per signer across numbering and
   emission, so concurrent Level-2 actions reach the host in the order they were numbered. Without
   it, a remote signer's uneven latency let a later event overtake an earlier one, the host rejected
