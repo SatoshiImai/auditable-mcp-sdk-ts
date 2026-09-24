@@ -276,7 +276,11 @@ export class AmcpSession {
     }));
     if (fault !== undefined) {
       await this._emitAbortedBestEffort(action, reasons.HOST_UNAVAILABLE);
-      throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNAVAILABLE);
+      const aborted = new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNAVAILABLE);
+      // The transport fault is the diagnosis; the abort is only the verdict. The Python port chains
+      // it with `raise ... from`, and `cause` is the same relation here.
+      aborted.cause = fault;
+      throw aborted;
     }
 
     if (response.status !== Status.ACCEPT) {

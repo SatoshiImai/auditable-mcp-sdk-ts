@@ -76,6 +76,28 @@ export class FailingRepository implements LedgerRepository {
   }
 }
 
+/** A repository whose `append` fails while `fail` is set, mirroring the Python suite's fixture. */
+export class FlakyRepository implements LedgerRepository {
+  fail = false;
+  readonly records = new Map<string, SealedRecord[]>();
+
+  async append(partition: string, record: SealedRecord): Promise<void> {
+    if (this.fail) {
+      throw new RepositoryError('storage down');
+    }
+    const existing = this.records.get(partition) ?? [];
+    existing.push(record);
+    this.records.set(partition, existing);
+  }
+  async loadTail(partition: string): Promise<SealedRecord | null> {
+    const existing = this.records.get(partition) ?? [];
+    return existing[existing.length - 1] ?? null;
+  }
+  async readAll(partition: string): Promise<SealedRecord[]> {
+    return [...(this.records.get(partition) ?? [])];
+  }
+}
+
 /** Build a wire attempt event. */
 export function makeAttempt(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

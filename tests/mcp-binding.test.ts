@@ -147,12 +147,14 @@ async function seams(
 async function toolOnABareWire(options: { requestTimeoutMs?: number } = {}): Promise<{
   transport: McpAuditTransport;
   frames: JsonRpcFrame[];
+  sessionSaw: SessionStub;
   reply: (frame: JsonRpcFrame) => Promise<void>;
   close: () => Promise<void>;
 }> {
   const [peerWire, toolWire] = InMemoryTransport.createLinkedPair();
   const transport = new McpAuditTransport(toolWire as unknown as McpTransport, TOOL_CAPABILITY, options);
-  new SessionStub().attachTo(transport);
+  const sessionSaw = new SessionStub();
+  sessionSaw.attachTo(transport);
   const frames: JsonRpcFrame[] = [];
   peerWire.onmessage = (message) => {
     frames.push(message as JsonRpcFrame);
@@ -164,6 +166,7 @@ async function toolOnABareWire(options: { requestTimeoutMs?: number } = {}): Pro
   return {
     transport,
     frames,
+    sessionSaw,
     reply: async (frame) => {
       await peerWire.send(frame as never);
       await settle();
@@ -333,6 +336,9 @@ describe('the per-event wire (§6)', () => {
     const wire = await seams(new SilentEndpoint(), { requestTimeoutMs: 20 });
     wire.transport.negotiate(TOOL_CAPABILITY);
     await expect(runOneAction(wire.transport)).rejects.toBeInstanceOf(AmcpAbortedError);
+    // The bound is the transport's, so assert what it answers, not only what the session does with
+    // it: silence MUST become an `unavailable` response (§6), never an absent one.
+    expect((await wire.transport.sendAttempt({ id: 'probe' })).status).toBe('unavailable');
     await wire.close();
   });
 
@@ -379,6 +385,35 @@ describe('the wire form (§6)', () => {
     expect(typeof frame?.id).toBe('string');
     expect(String(frame?.id).startsWith(ID_PREFIX)).toBe(true);
     await wire.reply({ jsonrpc: '2.0', id: frame?.id as string, result: ACCEPTED });
+    expect((await decided).status).toBe('accept');
+    await wire.close();
+  });
+
+  it('passes a response this seam never sent through to the session', async () => {
+    // JSON-RPC ids may be strings, so a peer that numbers its own requests that way produces
+    // responses that reach `intercept`. One that matches no pending attempt is the session's, and
+    // taking it for ours would drop it and break the call it answers.
+    const wire = await toolOnABareWire();
+    await wire.reply({ jsonrpc: '2.0', id: 'peer-7', result: { ok: true } });
+    expect(wire.sessionSaw.seen.some((frame) => frame.id === 'peer-7')).toBe(true);
+    // The seam still works afterwards: an unmatched response must not disturb it.
+    const decided = wire.transport.sendAttempt({ event_id: 'e1' });
+    await settle();
+    await wire.reply({ jsonrpc: '2.0', id: wire.frames.at(-1)?.id as string, result: ACCEPTED });
+    expect((await decided).status).toBe('accept');
+    await wire.close();
+  });
+
+  it('does not let a request wearing a pending attempt id settle that attempt', async () => {
+    // A request carries a method and is never an answer. Reading one as a decision would let a peer
+    // settle an audit attempt with a frame that decided nothing (§6.2 leaves ordinary traffic alone).
+    const wire = await toolOnABareWire();
+    const decided = wire.transport.sendAttempt({ event_id: 'e1' });
+    await settle();
+    const id = wire.frames.at(-1)?.id as string;
+    await wire.reply({ jsonrpc: '2.0', id, method: 'sampling/createMessage', params: {} });
+    expect(wire.sessionSaw.methods()).toContain('sampling/createMessage');
+    await wire.reply({ jsonrpc: '2.0', id, result: ACCEPTED });
     expect((await decided).status).toBe('accept');
     await wire.close();
   });

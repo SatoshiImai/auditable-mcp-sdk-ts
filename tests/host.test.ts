@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AuditHost } from '../src/host';
 import { InMemoryLedgerRepository } from '../src/storage';
 import { verifyLedger } from '../src/verify';
@@ -6,6 +6,7 @@ import {
   BadVerifier,
   eventIdAt,
   FailingRepository,
+  FlakyRepository,
   L2_CAPABILITY,
   MonotonicClock,
   makeAttempt,
@@ -116,7 +117,8 @@ describe('AuditHost outcome handling (§7.2)', () => {
     const host = l1Host();
     await host.handleOutcome(makeAttempt(eventIdAt(1), { outcome: 'success' }));
     expect(host.records()).toHaveLength(0);
-    expect(host.anomalies().some((a) => a.kind === 'orphaned-outcome')).toBe(true);
+    const orphan = host.anomalies().find((a) => a.kind === 'orphaned-outcome');
+    expect(orphan?.detail).toContain('without accepted attempt');
   });
 
   it('exempts an aborted outcome for a never-accepted attempt (§10.4)', async () => {
@@ -255,16 +257,39 @@ describe('the outcome channel’s remaining paths (§6, §10.8)', () => {
 
   it('a correlated outcome that cannot be persisted is lost, not flagged as tampering', async () => {
     // §10.8: a lost outcome is a completeness gap, and `internal-error` is not an anomaly kind.
-    const host = new AuditHost('tenant-a', undefined, {
-      clock: new MonotonicClock(),
-      repository: new FailingRepository(),
-    });
+    // The attempt must be sealed first, or the outcome lands on the orphan path instead and the
+    // persistence failure is never reached.
+    const repository = new FlakyRepository();
+    const host = new AuditHost('tenant-a', undefined, { clock: new MonotonicClock(), repository });
     const attempt = makeAttempt(eventIdAt(1));
-    // The attempt cannot be sealed either, so correlate it directly and then lose the outcome.
-    await host.handleAttempt(attempt);
+    expect((await host.handleAttempt(attempt)).status).toBe('accept');
+    repository.fail = true;
+    const logged: unknown[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => void logged.push(args[0]));
     await host.handleOutcome({ ...attempt, outcome: 'success' });
-    expect(host.records()).toHaveLength(0);
-    expect(host.anomalies().every((a) => a.kind !== 'internal-error')).toBe(true);
+    spy.mockRestore();
+    expect(host.records()).toHaveLength(1);
+    expect(host.anomalies()).toHaveLength(0);
+    expect(logged.join(' ')).toContain('could not persist');
+  });
+
+  it('does not advance the signer_seq tracker for an outcome it could not seal (§7.4)', async () => {
+    // A lost outcome was never sealed, so the per-key counter must still point at the last sealed
+    // value; advancing it would make the tool's next honest signer_seq read as a replay.
+    const repository = new FlakyRepository();
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, {
+      verifier: new OkVerifier(),
+      clock: new MonotonicClock(),
+      repository,
+    });
+    expect((await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 1))).status).toBe('accept');
+    repository.fail = true;
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await host.handleOutcome(signed({ ...makeAttempt(eventIdAt(1)), outcome: 'success' }, 2));
+    spy.mockRestore();
+    repository.fail = false;
+    expect((await host.handleAttempt(signed(makeAttempt(eventIdAt(2)), 2))).status).toBe('accept');
+    expect(host.anomalies()).toHaveLength(0);
   });
 
   it('an outcome after its attempt was rejected is an orphan (§7.2)', async () => {

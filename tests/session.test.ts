@@ -72,6 +72,17 @@ describe('await using is the fail-closed primitive', () => {
     expect(lastOutcome(host)).toBe('success');
   });
 
+  it('seals one terminal outcome however often the action is disposed (§8.3)', async () => {
+    // `await using` disposes once, but the disposer is a public method and a caller may also invoke
+    // it. A second terminal outcome for an id the host sealed once is a duplicate record, not a fact.
+    const { host, session } = l1Pair();
+    const action = await session.action('db.query', TABLE, { mutates: false, egress: true });
+    action.succeeded();
+    await action[Symbol.asyncDispose]();
+    await action[Symbol.asyncDispose]();
+    expect(host.records().filter((record) => record.event.outcome !== 'attempted')).toHaveLength(1);
+  });
+
   it('fails closed to failed when succeeded() is forgotten', async () => {
     const { host, session } = l1Pair();
     await (async () => {
@@ -185,6 +196,24 @@ describe('a transport fault (§6, §11.3)', () => {
         action.succeeded();
       })(),
     ).rejects.toBeInstanceOf(AmcpAbortedError);
+  });
+
+  it('carries the transport fault as the abort’s cause', async () => {
+    // The abort says the action did not happen; the cause says why. Dropping it leaves an operator
+    // with a `host-unavailable` and no way to tell a dead socket from a refusing host.
+    const session = new AmcpSession(new FaultyTransport(), 'call-1', { deps: new FixedDeps() });
+    const aborted = await (async () => {
+      try {
+        await using action = await session.action(spec.actionType, spec.target, spec);
+        action.succeeded();
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(aborted).toBeInstanceOf(AmcpAbortedError);
+    expect((aborted as AmcpAbortedError).cause).toBeInstanceOf(Error);
+    expect(String((aborted as AmcpAbortedError).cause)).toContain('the wire went away');
   });
 
   it('leaves an aborted record of the action that did not happen', async () => {
