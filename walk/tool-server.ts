@@ -21,6 +21,8 @@ import {
   Posture,
   SPEC_VERSION,
   transportFor,
+  type SealedRecord,
+  verifyLedger,
   Witness,
 } from '../src/index';
 import { Ed25519Signer, KeyRegistry, KeyRegistryVerifier, type ToolKey } from '../src/l2';
@@ -50,15 +52,60 @@ function onboardedKey(): ToolKey {
 
 const capability: AuditCapability = { spec_version: SPEC_VERSION, level, attempt: 'request', witness };
 const toolKey = onboardedKey();
-const signer = level === Level.L2 ? Ed25519Signer.fromToolKey(toolKey) : undefined;
+/**
+ * A signer whose latency is uneven, the shape of every remote one (§5.1 KMS).
+ *
+ * Numbers first and waits after, which is the order the AWS KMS adapter works in: the number is
+ * fixed before the latency that can reorder the emission.
+ */
+class RemoteSigner {
+  #calls = 0;
+  readonly #inner: Ed25519Signer;
+  constructor(inner: Ed25519Signer) {
+    this.#inner = inner;
+  }
+  async sign(event: Record<string, unknown>): Promise<Record<string, unknown>> {
+    this.#calls += 1;
+    // Captured before the await: reading the counter afterwards gives every caller the same value,
+    // because awaiting the inner signer lets every other caller number first.
+    const wait = Math.max(0, 60 - this.#calls * 6);
+    const signed = await this.#inner.sign(event);
+    // Each later call waits less than every earlier one, so without §7.4's section the emission
+    // order is exactly the reverse of the numbering - deterministically, not by chance.
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return signed;
+  }
+}
+
+const localSigner = level === Level.L2 ? Ed25519Signer.fromToolKey(toolKey) : undefined;
+const signer =
+  localSigner !== undefined && env.WALK_SIGNER === 'slow' ? new RemoteSigner(localSigner) : localSigner;
 
 // The degraded posture records into a host the tool provides for itself (§6.2).
 const localRegistry = new KeyRegistry();
 localRegistry.registerToolKey(toolKey);
+/** A store whose write yields, so the tool's own host has §7.1's window to get wrong. */
+class YieldingStore {
+  readonly rows: SealedRecord[] = [];
+  async append(_partition: string, record: SealedRecord): Promise<void> {
+    await Promise.resolve();
+    this.rows.push(record);
+  }
+  async loadTail(): Promise<SealedRecord | null> {
+    return null;
+  }
+  async readAll(): Promise<SealedRecord[]> {
+    return [...this.rows];
+  }
+}
+
 const localHost = new AuditHost(
   'tool-local',
   { spec_version: SPEC_VERSION, level, attempt: 'request', witness: Witness.NONE },
-  level === Level.L2 ? { verifier: new KeyRegistryVerifier(localRegistry) } : {},
+  {
+    repository: new YieldingStore(),
+    ...(level === Level.L2 ? { verifier: new KeyRegistryVerifier(localRegistry) } : {}),
+  },
 );
 
 const audit = new McpAuditTransport(new StdioServerTransport() as unknown as McpTransport, capability);
@@ -104,7 +151,9 @@ server.setRequestHandler('tools/call', async (request) => {
         type: 'text',
         text:
           `negotiated=${negotiation.negotiated ? 'True' : 'False'} outcome=${negotiation.outcome} ` +
-          `local_records=${localHost.records().length}`,
+          `local_records=${localHost.records().length} ` +
+          `local_verifies=${verifyLedger(localHost.records()).ok ? 'True' : 'False'} ` +
+          `local_anomalies=${localHost.anomalies().length}`,
       },
     ],
   };
