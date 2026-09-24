@@ -40,7 +40,7 @@ export class AmcpUsageError extends Error {
   }
 }
 
-/** Build a Verifiable Accept carrying the fields the tool needs for Polluted Stop (§7.1). */
+/** Build a Verifiable Accept, with the witness signature when the host signs (§7.1, §5.2). */
 export function accept(
   seq: number,
   recordHash: string,

@@ -119,10 +119,16 @@ export const DEFAULT_ADAPTER: RecordAdapter = Object.freeze({
  * @param adapter How to read the correlation key and attempt flag from each sealed record. Defaults to
  *   a bare top-level a-MCP event; inject accessors to correlate records sealed inside an envelope. A
  *   record whose `idOf` is `undefined`/`null` names no call and is exempt from attempt/outcome correlation.
- * @param expectedPrincipal When set, every record's `adapter.principalOf` is compared against it
- *   (strict equality); a mismatch or an absent identity is flagged `principal-mismatch`. This is an SDK
+ * @param expectedPrincipal When set, every record's `adapter.principalOf` is compared against it as a
+ *   value (§11.4); a mismatch or an absent identity is flagged `principal-mismatch`. This is an SDK
  *   check, not an a-MCP anomaly: it detects a transplant only for records sealed in an identity-binding
  *   envelope. Omit to skip.
+ * @param witnessChecker Resolves a `host_key_id` and verifies a witness signature over the canonical
+ *   host-assigned fields (§7.1). A record carrying no signature is unwitnessed, which is a state and
+ *   not an anomaly (§5.2); one whose signature fails is `host-signature-invalid`. Without a checker,
+ *   records that do carry signatures are counted in `unchecked` (§11.4).
+ * @param signatureChecker Verifies a sealed Level-2 event's own `signature` against the key registry.
+ *   Without one, records that carry Level-2 fields are counted in `unchecked` rather than verified.
  * @returns A report; `ok` is true only when no issues were found.
  */
 export function verifyChain(
