@@ -129,6 +129,7 @@ export function verifyChain(
   const attemptedIds = new Set<unknown>();
   let prevRecomputed = GENESIS_HASH;
   let witnessUnchecked = false;
+  let l2Unchecked = false;
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -184,8 +185,24 @@ export function verifyChain(
       });
     }
 
+    // §11.4 names the Level-2 re-verification it did not perform as well: this verifier checks the
+    // chain, not the event signatures (§10.6 makes that optional), and an unchecked signature must not
+    // read as a verified one.
+    if (event[fields.SIGNATURE] !== undefined) {
+      l2Unchecked = true;
+    }
+
     // Witness determination (§11.4): by the signature alone, never inferred from another field.
-    if (record.host_signature !== undefined && record.host_key_id !== undefined) {
+    if ((record.host_signature === undefined) !== (record.host_key_id === undefined)) {
+      // §7.1 pairs the two fields, and the response schema enforces it on the wire - but a stored
+      // record is not schema-checked, so a half-present pair reaches a verifier and establishes
+      // nothing. Silently ignoring it would be neither a check nor a report.
+      issues.push({
+        seq: record.seq,
+        kind: reasons.HOST_SIGNATURE_INVALID,
+        detail: 'host_signature and host_key_id must appear together or not at all',
+      });
+    } else if (record.host_signature !== undefined && record.host_key_id !== undefined) {
       if (witnessChecker === undefined) {
         witnessUnchecked = true;
       } else {
@@ -212,7 +229,13 @@ export function verifyChain(
     });
   }
 
-  const unchecked = witnessUnchecked ? (['witness'] as const) : ([] as const);
+  const unchecked: string[] = [];
+  if (witnessUnchecked) {
+    unchecked.push('witness');
+  }
+  if (l2Unchecked) {
+    unchecked.push('level-2-signature');
+  }
   return {
     ok: issues.length === 0,
     count: records.length,

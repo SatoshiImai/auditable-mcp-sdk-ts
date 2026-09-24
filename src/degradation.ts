@@ -18,6 +18,7 @@
  */
 
 import type { NegotiationResult } from './capability';
+import { Witness } from './models';
 import type { AuditTransport } from './transport';
 
 /** How a tool spends an audit obligation it cannot discharge against the host (§6.2). */
@@ -63,6 +64,13 @@ export function transportFor(
   }
   if ((options.posture ?? Posture.DEGRADED) === Posture.MANDATORY) {
     throw new UnnegotiatedSessionError(negotiation);
+  }
+  // A tool that requires a witness cannot take the degraded posture: the audit host it provides for
+  // itself holds no key a verifier's registry binds to a host (§5.2), so every action would abort
+  // `host-unwitnessed` (§7.2) and the tool would serve while doing nothing. The coherent posture for a
+  // tool with that requirement is mandatory, and saying so beats an unusable degraded session.
+  if (negotiation.tool.witness === Witness.HOST) {
+    throw new Error('a tool that requires witness "host" cannot degrade; use Posture.MANDATORY (§5.2, §6.2)');
   }
   if (options.fallback === undefined) {
     throw new Error('the degraded posture needs a fallback transport to record into (§6.2)');

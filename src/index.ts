@@ -64,6 +64,7 @@ export {
   attemptResponseSchema,
   auditCapabilitySchema,
   auditEventSchema,
+  EXTENSION_ID,
   firstSealedValidationError,
   firstValidationError,
   KNOWN_SPEC_VERSIONS,

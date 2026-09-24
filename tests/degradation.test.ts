@@ -76,3 +76,25 @@ describe('degradation postures (§6.2)', () => {
     expect(verifyLedger(records).complete).toBe(true);
   });
 });
+
+describe('a tool that requires a witness (§5.2, §6.2)', () => {
+  const requiring: AuditCapability = { ...L1, witness: Witness.HOST };
+
+  it('cannot take the degraded posture', () => {
+    expect(() =>
+      transportFor(negotiate(undefined, requiring), {
+        negotiated: transport('tenant-a'),
+        fallback: transport('tool-local'),
+      }),
+    ).toThrow(/MANDATORY/);
+  });
+
+  it('may still refuse to serve', () => {
+    expect(() =>
+      transportFor(negotiate(undefined, requiring), {
+        negotiated: transport('tenant-a'),
+        posture: Posture.MANDATORY,
+      }),
+    ).toThrow(UnnegotiatedSessionError);
+  });
+});

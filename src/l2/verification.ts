@@ -153,7 +153,7 @@ export class WitnessRegistryVerifier {
    * Offline ledger verification (§11.4) is synchronous and reads stored records, so it uses this
    * directly; `verify` is the async form the tool-side seam expects.
    */
-  check = (hostKeyId: string, signature: string, payload: Uint8Array): boolean => {
+  readonly check = (hostKeyId: string, signature: string, payload: Uint8Array): boolean => {
     const entry = this.#registry.get(hostKeyId);
     if (entry === undefined) {
       return false;

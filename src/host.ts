@@ -128,6 +128,12 @@ export class AuditHost implements AuditEndpoint {
     if (resolved.witness === Witness.HOST && options.witnessSigner === undefined) {
       throw new Error('a host declaring witness "host" requires a WitnessSigner');
     }
+    // §7.1: a host that declares `none` MUST NOT return `host_signature` or `host_key_id`. Holding a
+    // signer while declaring `none` is the only way to violate that, so the pair is refused here
+    // rather than silently ignored at seal time.
+    if (resolved.witness === Witness.NONE && options.witnessSigner !== undefined) {
+      throw new Error('a host declaring witness "none" must not hold a WitnessSigner');
+    }
     this.#partition = partition;
     this.#capability = resolved;
     this.#ledger = new Ledger(partition);
@@ -191,11 +197,18 @@ export class AuditHost implements AuditEndpoint {
     // Sign before persisting, so the signature is stored with the record it covers (§7.1, §7.2).
     if (this.#witnessSigner !== undefined) {
       const payload = witnessPayload(sealed.seq, sealed.host_ts, sealed.previous_hash, sealed.record_hash);
-      sealed = {
-        ...sealed,
-        host_signature: await this.#witnessSigner.sign(payload),
-        host_key_id: this.#witnessSigner.keyId,
-      };
+      let signature: string;
+      try {
+        signature = await this.#witnessSigner.sign(payload);
+      } catch {
+        // A host that declared it signs cannot record conformantly without the signature, so a signer
+        // failure is a host-internal failure and fails closed as `unavailable` (§7.1, §7.6
+        // `internal-error`) - never an exception through the audit path. The catch is broad on purpose:
+        // the signer is injected third-party code (an HSM or KMS client) whose error types this SDK
+        // does not know, and letting any of them escape leaves the tool with no fail-closed signal.
+        return null;
+      }
+      sealed = { ...sealed, host_signature: signature, host_key_id: this.#witnessSigner.keyId };
     }
     if (this.#repository !== undefined) {
       try {

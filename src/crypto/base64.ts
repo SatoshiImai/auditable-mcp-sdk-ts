@@ -12,8 +12,16 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** Decode a standard base64 string to bytes. Throws if the input is not valid base64. */
+// Standard base64 exactly as §5.1 pins it: the alphabet of RFC 4648 §4, padded to a multiple of four.
+// `atob` alone is laxer - it tolerates whitespace and missing padding - which would let this port
+// accept a signature the Python port rejects, so the shape is checked before decoding.
+const STANDARD_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** Decode a standard base64 string to bytes. Throws if the input is not valid standard base64. */
 export function base64ToBytes(text: string): Uint8Array {
+  if (text.length % 4 !== 0 || !STANDARD_BASE64.test(text)) {
+    throw new TypeError('not standard base64 (RFC 4648 §4, padded)');
+  }
   const binary = atob(text);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {

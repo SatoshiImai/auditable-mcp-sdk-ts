@@ -22,6 +22,13 @@ import { MAX_SAFE_INTEGER } from './canonical';
 // The only spec version defined by this contract; a mismatch is a hard validation error.
 export const SPEC_VERSION = 'auditable-mcp/0.3' as const;
 
+/**
+ * The [SEP-2133] extension identifier this capability is declared under, in the `extensions` member of
+ * ClientCapabilities (host) or ServerCapabilities (tool) during MCP `initialize` (§6.1). The identifier
+ * names the extension; `SPEC_VERSION` names the wire version, and the two move independently.
+ */
+export const EXTENSION_ID = 'com.timberlandchapel/auditable-mcp' as const;
+
 // Patterns copied verbatim from the normative JSON Schema (spec/schema/).
 export const UUID_PATTERN =
   '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000)$';

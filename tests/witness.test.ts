@@ -1,8 +1,9 @@
 /** Tests for the witness axis (§5.2, §7.1, §7.2, §11.4), mirroring the Python SDK's suite. */
 
 import { describe, expect, it } from 'vitest';
+import { base64ToBytes } from '../src/crypto/base64';
 import { nobleEd25519Engine } from '../src/crypto/noble';
-import { witnessPayload } from '../src/hashing';
+import { computeRecordHash, witnessPayload } from '../src/hashing';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
 import { Ed25519WitnessSigner, generateToolKey, KeyRegistry, SignatureAlgorithm } from '../src/l2';
@@ -12,6 +13,7 @@ import {
   type AcceptResponse,
   type AttemptResponse,
   type AuditCapability,
+  EXTENSION_ID,
   Level,
   SPEC_VERSION,
   Status,
@@ -257,5 +259,71 @@ describe('the verifier side of the witness (§11.4)', () => {
     );
     expect(report.ok).toBe(false);
     expect(new Set(report.issues.map((issue) => issue.kind))).toEqual(new Set(['host-signature-invalid']));
+  });
+});
+
+/** A signer whose backend is down, as an HSM or KMS client would be. */
+class FailingSigner {
+  readonly keyId = HOST_KEY_ID;
+  async sign(): Promise<string> {
+    throw new Error('KMS unreachable');
+  }
+}
+
+describe('the implementation review’s findings (§5.1, §7.1, §11.4)', () => {
+  it('ships the SEP-2133 extension identifier', () => {
+    expect(EXTENSION_ID).toBe('com.timberlandchapel/auditable-mcp');
+  });
+
+  it('refuses a host that declares none and holds a signer (§7.1)', () => {
+    expect(() => new AuditHost('tenant-a', capability(Witness.NONE), { witnessSigner: new FailingSigner() })).toThrow(
+      /must not hold/,
+    );
+  });
+
+  it('fails closed as unavailable when the signer fails (§7.1, §7.6)', async () => {
+    const host = new AuditHost('tenant-a', capability(Witness.HOST), {
+      witnessSigner: new FailingSigner(),
+      clock: new MonotonicClock(),
+    });
+    const response = await host.handleAttempt(makeAttempt('00000000-0000-4000-8000-000000000001'));
+    expect(response.status).toBe(Status.UNAVAILABLE);
+    expect(host.records()).toEqual([]);
+  });
+
+  it('names an unverified Level-2 signature as unchecked (§11.4)', async () => {
+    const host = new AuditHost('tenant-a', capability(Witness.NONE), { clock: new MonotonicClock() });
+    await host.handleAttempt(
+      makeAttempt('00000000-0000-4000-8000-000000000001', { key_id: 'k1', signer_seq: 1, signature: 'ZmFrZQ==' }),
+    );
+    const report = verifyLedger(host.records());
+    expect(report.ok).toBe(true);
+    expect(report.unchecked).toEqual(['level-2-signature']);
+    expect(report.complete).toBe(false);
+  });
+
+  it('reports a stored half pair rather than ignoring it (§7.1)', () => {
+    const event = makeAttempt('00000000-0000-4000-8000-000000000001');
+    const recordHash = computeRecordHash(event, 0, '2026-07-15T00:00:02.000Z', '0'.repeat(64));
+    for (const witness of [{ host_signature: 'ZmFrZQ==' }, { host_key_id: HOST_KEY_ID }]) {
+      const record: SealedRecord = {
+        event,
+        seq: 0,
+        host_ts: '2026-07-15T00:00:02.000Z',
+        previous_hash: '0'.repeat(64),
+        record_hash: recordHash,
+        ...witness,
+      };
+      const report = verifyLedger([record]);
+      expect(report.ok, JSON.stringify(witness)).toBe(false);
+      expect(report.issues.map((issue) => issue.kind)).toEqual(['host-signature-invalid']);
+    }
+  });
+
+  it('decodes only standard base64, as §5.1 pins it (RFC 4648 §4)', () => {
+    expect(base64ToBytes('ZmFrZQ==')).toHaveLength(4);
+    for (const malformed of ['Zm Fr ZQ==', 'ZmFrZQ', 'a-_b', 'ZmFr!ZQ==']) {
+      expect(() => base64ToBytes(malformed), malformed).toThrow();
+    }
   });
 });
