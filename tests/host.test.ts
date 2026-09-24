@@ -205,3 +205,38 @@ describe('AuditHost.resume (§8.3)', () => {
     expect(verifyLedger(await repo.readAll('tenant-a'), resumed.digest()).ok).toBe(true);
   });
 });
+
+describe('an outcome that fails Level-2 validation (§6, §8.3)', () => {
+  it('a forged outcome is not sealed and is flagged', async () => {
+    // §6: the host cannot reject a notification, so the anomaly set is where the failure goes.
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, {
+      verifier: new BadVerifier(),
+      clock: new MonotonicClock(),
+    });
+    const attempt = signed(makeAttempt(eventIdAt(1)), 1);
+    // The attempt is correlated by a host that accepted it, so the outcome has something to match.
+    const accepting = new AuditHost('tenant-a', L2_CAPABILITY, {
+      verifier: new OkVerifier(),
+      clock: new MonotonicClock(),
+    });
+    await accepting.handleAttempt(attempt);
+    await host.handleAttempt(attempt);
+    const before = host.records().length;
+    await host.handleOutcome(signed({ ...attempt, outcome: 'success' }, 2));
+    expect(host.records()).toHaveLength(before);
+    expect(host.anomalies().every((a) => a.kind === 'signature-invalid')).toBe(true);
+  });
+
+  it('a replayed outcome sequence is not sealed and is flagged', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, {
+      verifier: new OkVerifier(),
+      clock: new MonotonicClock(),
+    });
+    const attempt = signed(makeAttempt(eventIdAt(1)), 5);
+    await host.handleAttempt(attempt);
+    const before = host.records().length;
+    await host.handleOutcome(signed({ ...attempt, outcome: 'success' }, 5));
+    expect(host.records()).toHaveLength(before);
+    expect(host.anomalies().some((a) => a.kind === 'replay-detected')).toBe(true);
+  });
+});
