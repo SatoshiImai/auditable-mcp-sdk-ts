@@ -203,12 +203,13 @@ export class AuditHost implements AuditEndpoint {
       let signature: string;
       try {
         signature = await this.#witnessSigner.sign(payload);
-      } catch {
+      } catch (error) {
         // A host that declared it signs cannot record conformantly without the signature, so a signer
         // failure is a host-internal failure and fails closed as `unavailable` (§7.1, §7.6
         // `internal-error`) - never an exception through the audit path. The catch is broad on purpose:
         // the signer is injected third-party code (an HSM or KMS client) whose error types this SDK
         // does not know, and letting any of them escape leaves the tool with no fail-closed signal.
+        console.error(`auditable-mcp: witness signing failed for partition ${this.#partition}; failing closed`, error);
         return null;
       }
       sealed = { ...sealed, host_signature: signature, host_key_id: this.#witnessSigner.keyId };

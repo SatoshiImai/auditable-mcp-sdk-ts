@@ -273,14 +273,18 @@ export class McpAuditTransport extends FrameSeam implements AuditTransport {
       // §6 bounds this wait at the transport, and a decision the tool never read is a failure to
       // record: the session aborts rather than acting unrecorded (§7.2).
       const bounded = new Promise<AttemptResponse>((resolve) => {
-        timer = setTimeout(() => resolve(unavailable()), this.#requestTimeoutMs);
+        timer = setTimeout(() => {
+          console.error(`auditable-mcp: no decision for ${id} within ${this.#requestTimeoutMs}ms; failing closed`);
+          resolve(unavailable());
+        }, this.#requestTimeoutMs);
       });
       await this.sendFrame({ jsonrpc: '2.0', id, method: ATTEMPT_METHOD, params: event });
       return await Promise.race([decided, bounded]);
-    } catch {
+    } catch (error) {
       // A connection that has gone away answers nothing, which is what `unavailable` says. Letting
       // the transport's own error out instead would reach the tool as something other than an audit
       // decision, and a tool that branches on the decision (§7.2) would never see it.
+      console.error(`auditable-mcp: ${ATTEMPT_METHOD} could not be sent; failing closed`, error);
       return unavailable();
     } finally {
       if (timer !== undefined) {
@@ -295,9 +299,10 @@ export class McpAuditTransport extends FrameSeam implements AuditTransport {
     this.requireNegotiated();
     try {
       await this.sendFrame({ jsonrpc: '2.0', method: OUTCOME_METHOD, params: event });
-    } catch {
+    } catch (error) {
       // An outcome has no response channel and no retry in §6; the host detects the gap by the
       // attempt it sealed and never saw resolved, which is what §7.5 is for.
+      console.error(`auditable-mcp: ${OUTCOME_METHOD} could not be sent`, error);
     }
   }
 
@@ -341,10 +346,21 @@ export class McpAuditTransport extends FrameSeam implements AuditTransport {
     if (frame.error !== undefined) {
       // §6 reserves JSON-RPC errors for protocol faults and requires the tool to read one for an
       // attempt as a failure to record, exactly as for `unavailable`.
+      console.error(
+        `auditable-mcp: ${ATTEMPT_METHOD} ${String(frame.id)} answered with a JSON-RPC error`,
+        frame.error.message,
+      );
       return unavailable();
     }
     const parsed = attemptResponseSchema.safeParse(frame.result);
-    return parsed.success ? parsed.data : unavailable();
+    if (!parsed.success) {
+      console.error(
+        `auditable-mcp: ${ATTEMPT_METHOD} ${String(frame.id)} answered with an unreadable result`,
+        parsed.error.message,
+      );
+      return unavailable();
+    }
+    return parsed.data;
   }
 
   private requireNegotiated(): void {
@@ -397,6 +413,7 @@ export class McpAuditReceiver extends FrameSeam {
       // An attempt sent without an id has no response channel, so it cannot be accepted and the tool
       // cannot be told. Sealing it anyway would record an operation the tool never learned it was
       // cleared for, which is the one thing §6 guarantees against.
+      console.error(`auditable-mcp: ${ATTEMPT_METHOD} arrived as a notification; it cannot be answered`);
       return true;
     }
     return false;
@@ -416,11 +433,12 @@ export class McpAuditReceiver extends FrameSeam {
     let response: AttemptResponse;
     try {
       response = await this.#endpoint.handleAttempt(frame.params ?? {});
-    } catch {
+    } catch (error) {
       // §6 requires every audit-layer decision to travel as a result, never as a JSON-RPC error, so
       // an endpoint that threw has to be turned into one. It recorded nothing, which is what
       // `unavailable` says, and the tool already fails closed on it (§7.2). Rethrowing would let a
       // host-side defect reach the tool as a protocol fault instead of an audit decision.
+      console.error(`auditable-mcp: the audit endpoint threw while handling ${ATTEMPT_METHOD}`, error);
       response = unavailable();
     }
     await this.sendFrame({ jsonrpc: '2.0', id: frame.id, result: response });
@@ -430,9 +448,10 @@ export class McpAuditReceiver extends FrameSeam {
   private async sealOutcome(frame: JsonRpcFrame): Promise<void> {
     try {
       await this.#endpoint.handleOutcome(frame.params ?? {});
-    } catch {
+    } catch (error) {
       // There is no channel to answer on, so the endpoint's own anomaly set is where this belongs
       // (§7.6). A throw instead of an anomaly is a host-side defect, and it changes nothing here.
+      console.error(`auditable-mcp: the audit endpoint threw while handling ${OUTCOME_METHOD}`, error);
     }
   }
 }

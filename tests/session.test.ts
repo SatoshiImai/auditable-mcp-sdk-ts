@@ -142,3 +142,68 @@ describe('Level 2 session end-to-end', () => {
     expect(verifyLedger(host.records(), host.digest()).ok).toBe(true);
   });
 });
+
+/** A transport whose send throws, as a wire transport can (§11.3). */
+class FaultyTransport implements AuditTransport {
+  readonly outcomes: Record<string, unknown>[] = [];
+  readonly #outcomeAlsoFails: boolean;
+
+  constructor(outcomeAlsoFails = false) {
+    this.#outcomeAlsoFails = outcomeAlsoFails;
+  }
+
+  negotiate(): never {
+    throw new Error('not used by these tests');
+  }
+
+  async sendAttempt(): Promise<never> {
+    throw new Error('the wire went away');
+  }
+
+  async sendOutcome(event: Record<string, unknown>): Promise<void> {
+    if (this.#outcomeAlsoFails) {
+      throw new Error('the wire is still gone');
+    }
+    this.outcomes.push(event);
+  }
+}
+
+describe('a transport fault (§6, §11.3)', () => {
+  const spec = {
+    actionType: 'db.read',
+    target: { kind: 'table', ref: 'customers' },
+    mutates: false,
+    egress: false,
+  } as const;
+
+  it('aborts rather than escaping as the transport’s own error', async () => {
+    const session = new AmcpSession(new FaultyTransport(), 'call-1', { deps: new FixedDeps() });
+    await expect(
+      (async () => {
+        await using action = await session.action(spec.actionType, spec.target, spec);
+        action.succeeded();
+      })(),
+    ).rejects.toBeInstanceOf(AmcpAbortedError);
+  });
+
+  it('leaves an aborted record of the action that did not happen', async () => {
+    const transport = new FaultyTransport();
+    const session = new AmcpSession(transport, 'call-1', { deps: new FixedDeps() });
+    await expect(
+      (async () => {
+        await using _action = await session.action(spec.actionType, spec.target, spec);
+      })(),
+    ).rejects.toBeInstanceOf(AmcpAbortedError);
+    expect(transport.outcomes.map((event) => event.outcome)).toEqual(['aborted']);
+    expect(transport.outcomes[0]?.reason).toBe('host-unavailable');
+  });
+
+  it('a transport that fails twice does not mask the abort', async () => {
+    const session = new AmcpSession(new FaultyTransport(true), 'call-1', { deps: new FixedDeps() });
+    await expect(
+      (async () => {
+        await using _action = await session.action(spec.actionType, spec.target, spec);
+      })(),
+    ).rejects.toBeInstanceOf(AmcpAbortedError);
+  });
+});
