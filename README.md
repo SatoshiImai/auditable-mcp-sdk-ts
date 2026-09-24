@@ -287,10 +287,25 @@ that was not audit-negotiated.
 
 ### The walk
 
-`walk/tool-server.ts` is this SDK's tool served over real stdio, driven by the Python SDK's
-`walk/run.py` from a host in another process and another language. That is where the
-interoperability claim is checked rather than asserted: check both ports out side by side and run
-`make walk CASE=crosslang` in the Python repo.
+`npm run walk` runs the SDK the way a deployment does: the tool is a **separate process**, the wire
+is a real pipe, and the host is the official MCP client with an `McpAuditReceiver` in front of it.
+The suite cannot see what only exists across that boundary — framing, back-pressure, process
+lifetime, and operations that really are concurrent — so the walk covers it, and each case states
+what it expects of the ledger rather than of the SDK's internals.
+
+It also drives the **Python** tool from this host, while the Python SDK's `walk/run.py` drives this
+SDK's tool from its own. Between them both bindings meet the other port's on a real wire, in both
+combinations, which is where the interoperability claim is checked rather than asserted. Those cases
+are skipped if the other port is not checked out beside this one.
+
+The cases have teeth: removing the §7.1 sealing lock, the §7.4 numbering section, or either side's
+`initialize` declaration turns the walk red. Guards against *misuse* of this SDK's own API are not
+covered here — nothing across a process boundary can provoke them — and belong to the suite.
+
+```bash
+npm run walk              # every case
+npm run walk crosslang    # the cross-language cases
+```
 
 ## Conformance
 

@@ -60,6 +60,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check . && tsc --noEmit",
     "format": "biome check --write .",
+    "walk": "tsx walk/run.ts",
     "spec:check": "tsx scripts/sync-spec.ts --check",
     "spec:sync": "tsx scripts/sync-spec.ts"
   },
