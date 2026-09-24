@@ -28,6 +28,13 @@ stay symmetric by design.
   since `audit/outcome` has no response channel. `AmcpSession` takes a `witnessVerifier`
   (`WitnessRegistryVerifier`) and enforces §7.2's precedence. `SealedRecord` carries
   `host_signature` / `host_key_id`, absent when unwitnessed.
+- **A tool-side failure is no longer reported as the host's.** Building the attempt signs it under
+  Level 2, and that happened inside the transport-fault conversion, so a dead KMS surfaced as
+  `AmcpAbortedError(host-unavailable)` - an operator sent to a host that was answering perfectly
+  well. It reaches the caller as itself now.
+- **Every abort path emits best-effort.** Only the transport-fault path did; on the other four a
+  failure while recording the abort replaced the abort, so the caller saw the second failure instead
+  of why the tool stopped (§7.2).
 - **`AmcpUsageError`** separates an integrator error from a transport fault. The session's
   fail-closed catch was converting the MCP binding's own refusals - an unnegotiated send, a
   handshake not seen - into `host-unavailable`, filing an `aborted` record that blamed the host for

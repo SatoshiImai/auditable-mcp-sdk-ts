@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
+import { type AttemptResponse, Level, SPEC_VERSION, Witness } from '../src/models';
 import { AmcpAbortedError, AmcpSession } from '../src/session';
-import { AmcpUsageError, type AuditTransport } from '../src/transport';
+import { AmcpUsageError, type AuditEndpoint, type AuditTransport, reject } from '../src/transport';
 import { verifyLedger } from '../src/verify';
 import { withAudit } from '../src/with-audit';
 import { FixedDeps, L2_CAPABILITY, MonotonicClock, OkVerifier, StubSigner } from './helpers';
@@ -230,5 +231,60 @@ describe('misuse is not a transport fault (§6.2, §11.3)', () => {
     ).rejects.toBeInstanceOf(AmcpUsageError);
     // Blaming the host for the integrator's wiring buries the one thing they need to see.
     expect(transport.outcomes).toHaveLength(0);
+  });
+});
+
+/** The tool's own signer is down. The host is fine. */
+class DeadSigner {
+  async sign(): Promise<never> {
+    throw new Error('KMS unreachable');
+  }
+}
+
+/** A host that rejects every attempt and then fails while recording the abort. */
+class RefusingHost implements AuditEndpoint {
+  readonly capability = {
+    spec_version: SPEC_VERSION,
+    level: Level.L1,
+    attempt: 'request',
+    witness: Witness.NONE,
+  } as const;
+  outcomes = 0;
+  async handleAttempt(): Promise<AttemptResponse> {
+    return reject('schema-invalid');
+  }
+  async handleOutcome(): Promise<void> {
+    this.outcomes += 1;
+    throw new Error('the wire went away mid-abort');
+  }
+}
+
+describe('a tool-side failure is not the host’s failure (§7.2, §7.6)', () => {
+  const spec = { target: { kind: 'table', ref: 'customers' }, mutates: false, egress: false } as const;
+
+  it('a dead signer reaches the caller as itself', async () => {
+    const host = new AuditHost('tenant-a', undefined, { clock: new MonotonicClock() });
+    const session = new AmcpSession(new InProcessTransport(host), 'call-1', {
+      signer: new DeadSigner(),
+      deps: new FixedDeps(),
+    });
+    await expect(
+      (async () => {
+        await using _action = await session.action('db.read', spec.target, spec);
+      })(),
+    ).rejects.toThrow('KMS unreachable');
+    // host-unavailable would send an operator to a host that is answering perfectly well.
+    expect(host.records()).toHaveLength(0);
+  });
+
+  it('a failure to record the abort does not replace the abort', async () => {
+    const endpoint = new RefusingHost();
+    const session = new AmcpSession(new InProcessTransport(endpoint), 'call-1', { deps: new FixedDeps() });
+    await expect(
+      (async () => {
+        await using _action = await session.action('db.read', spec.target, spec);
+      })(),
+    ).rejects.toBeInstanceOf(AmcpAbortedError);
+    expect(endpoint.outcomes).toBe(1);
   });
 });

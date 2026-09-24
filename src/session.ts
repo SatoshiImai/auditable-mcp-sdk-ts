@@ -34,7 +34,7 @@ import {
 } from './models';
 import { Mutex } from './mutex';
 import * as reasons from './reasons';
-import { AmcpUsageError, type AuditTransport } from './transport';
+import { AmcpUsageError, type AuditTransport, unavailable } from './transport';
 
 /**
  * Stamps an event with `key_id`, `sequence`, and `signature` (Level 2, §5, §8.2).
@@ -219,6 +219,23 @@ export class AmcpSession {
     });
   }
 
+  /**
+   * Emit an aborted outcome without letting a failure to emit it mask the abort itself (§7.2).
+   *
+   * Every abort path goes through here. Building the outcome signs it under Level 2, so a dead
+   * signer or a dead transport can fail the emission - and the abort is what the caller must act
+   * on, not the second failure that happened while recording it.
+   *
+   * @internal
+   */
+  async _emitAbortedBestEffort(action: AuditedAction, reason: string): Promise<void> {
+    try {
+      await this._emitOutcome(action, Outcome.ABORTED, reason);
+    } catch (error) {
+      console.error('auditable-mcp: could not emit the aborted outcome', reason, error);
+    }
+  }
+
   async action(
     actionType: string,
     targetResource: TargetResource | Record<string, unknown>,
@@ -229,40 +246,43 @@ export class AmcpSession {
 
     let attempt: Record<string, unknown>;
     let response: AttemptResponse;
-    try {
-      // §7.4: the numbering and the emission are one section, so two concurrent actions under one
-      // key cannot leave in the order their signing happened to finish in. The section spans the
-      // host's answer, not just the send: on a transport that carries each call on its own stream
-      // (Streamable HTTP, §6), two frames sent in order have no mutual arrival order, so the
-      // previous attempt has to be acknowledged before the next one is emitted. It costs the
-      // overlap of the wire latency under Level 2, and it is what makes the ordering hold on a
-      // transport that does not carry one.
-      ({ attempt, response } = await this.#numbering.run(async () => {
-        const numbered = await action._build(Outcome.ATTEMPTED);
-        return { attempt: numbered, response: await this._transport.sendAttempt(numbered) };
-      }));
-    } catch (error) {
-      if (error instanceof AmcpUsageError) {
-        // Not a failure to record: the SDK was used against its own contract, and no audit outcome
-        // describes that. Filing `host-unavailable` for it would blame the host for the integrator's
-        // error and bury the one thing they need to see (§6.2).
-        throw error;
-      }
-      // §6/§11.3: a JSON-RPC transport fault (vs an `unavailable` result) is handled exactly as
-      // `unavailable` — fail closed. Emit a fail-closed aborted outcome for observability, best-effort
-      // so a broken transport cannot mask the abort itself.
+    let fault: unknown;
+    // §7.4: the numbering and the emission are one section, so two concurrent actions under one key
+    // cannot leave in the order their signing happened to finish in. The section spans the host's
+    // answer, not just the send: on a transport that carries each call on its own stream (Streamable
+    // HTTP, §6), two frames sent in order have no mutual arrival order, so the previous attempt has
+    // to be acknowledged before the next one is emitted. It costs the overlap of the wire latency
+    // under Level 2, and it is what makes the ordering hold on a transport that does not carry one.
+    ({ attempt, response } = await this.#numbering.run(async () => {
+      // Building signs the event under Level 2, and a signer that fails is the tool's own failure,
+      // not the host's. It stays outside the conversion below so it reaches the caller as itself
+      // rather than as host-unavailable, which would send an operator to the host.
+      const numbered = await action._build(Outcome.ATTEMPTED);
       try {
-        await this._emitOutcome(action, Outcome.ABORTED, reasons.HOST_UNAVAILABLE);
-      } catch (outcomeError) {
-        console.error('auditable-mcp: failed to emit aborted outcome after a transport fault', outcomeError);
+        return { attempt: numbered, response: await this._transport.sendAttempt(numbered) };
+      } catch (error) {
+        if (error instanceof AmcpUsageError) {
+          // Not a failure to record: the SDK was used against its own contract, and no audit outcome
+          // describes that. Filing host-unavailable for it would blame the host for the integrator's
+          // error and bury the one thing they need to see (§6.2).
+          throw error;
+        }
+        // §6/§11.3: a transport fault (as against an `unavailable` result) is a failure to record
+        // and is handled exactly as `unavailable` - fail closed. The abort is emitted outside this
+        // section, which the emission needs for itself.
+        fault = error;
+        return { attempt: numbered, response: unavailable() };
       }
+    }));
+    if (fault !== undefined) {
+      await this._emitAbortedBestEffort(action, reasons.HOST_UNAVAILABLE);
       throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNAVAILABLE);
     }
 
     if (response.status !== Status.ACCEPT) {
       // reject (invalid) or unavailable (not persisted): do not act; signal aborted (§11.3).
       const reason = response.status === Status.REJECT ? reasons.HOST_REJECTED : reasons.HOST_UNAVAILABLE;
-      await this._emitOutcome(action, Outcome.ABORTED, reason);
+      await this._emitAbortedBestEffort(action, reason);
       throw new AmcpAbortedError(actionType, target.ref, reason);
     }
 
@@ -270,7 +290,7 @@ export class AmcpSession {
     // authenticates the host-assigned fields, then the hash computed over them. The reason is sealed
     // into the ledger and compared across implementations, so the order is not incidental.
     if (this._requireWitness && response.host_signature === undefined) {
-      await this._emitOutcome(action, Outcome.ABORTED, reasons.HOST_UNWITNESSED);
+      await this._emitAbortedBestEffort(action, reasons.HOST_UNWITNESSED);
       throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNWITNESSED);
     }
     if (response.host_signature !== undefined && this._witnessVerifier !== undefined) {
@@ -278,7 +298,7 @@ export class AmcpSession {
       const keyId = response.host_key_id as string;
       const payload = witnessPayload(response.seq, response.host_ts, response.previous_hash, response.record_hash);
       if (!(await this._witnessVerifier.verify(keyId, response.host_signature, payload))) {
-        await this._emitOutcome(action, Outcome.ABORTED, reasons.HOST_SIGNATURE_INVALID);
+        await this._emitAbortedBestEffort(action, reasons.HOST_SIGNATURE_INVALID);
         throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_SIGNATURE_INVALID);
       }
     }
@@ -288,7 +308,7 @@ export class AmcpSession {
       // the host sealed a different record, so the tool must not act.
       const expected = computeRecordHash(attempt, response.seq, response.host_ts, response.previous_hash);
       if (expected !== response.record_hash) {
-        await this._emitOutcome(action, Outcome.ABORTED, reasons.HASH_MISMATCH);
+        await this._emitAbortedBestEffort(action, reasons.HASH_MISMATCH);
         throw new AmcpAbortedError(actionType, target.ref, reasons.HASH_MISMATCH);
       }
     }
