@@ -64,11 +64,15 @@ export interface McpTransport {
   start(): Promise<void>;
   send(message: JsonRpcFrame, options?: unknown): Promise<void>;
   close(): Promise<void>;
+  /** Set by the Streamable HTTP transports; it decides how the session cancels a request. */
+  readonly hasPerRequestStream?: boolean | undefined;
   onmessage?: ((message: JsonRpcFrame, extra?: unknown) => void) | undefined;
   onclose?: (() => void) | undefined;
   onerror?: ((error: Error) => void) | undefined;
   sessionId?: string | undefined;
   setProtocolVersion?: ((version: string) => void) | undefined;
+  /** Called during connect, for the header validation an HTTP transport performs. */
+  setSupportedProtocolVersions?: ((versions: string[]) => void) | undefined;
 }
 
 /** The binding was driven into a state §6 does not define. */
@@ -177,6 +181,22 @@ abstract class FrameSeam implements McpTransport {
 
   setProtocolVersion(version: string): void {
     this.inner.setProtocolVersion?.(version);
+  }
+
+  setSupportedProtocolVersions(versions: string[]): void {
+    this.inner.setSupportedProtocolVersions?.(versions);
+  }
+
+  /**
+   * Every member of the wrapped transport reaches the session, this one included.
+   *
+   * The session reads it to choose how it cancels a request: on a per-request-stream transport it
+   * aborts that stream, and otherwise it sends `notifications/cancelled`. A seam that reported
+   * `undefined` for a transport that sets it would change how ordinary MCP behaves on this
+   * connection, which §6.2 does not permit this extension to do.
+   */
+  get hasPerRequestStream(): boolean | undefined {
+    return this.inner.hasPerRequestStream;
   }
 
   /** Send one JSON-RPC message for this seam's own traffic. One message per frame, never an array (§6). */

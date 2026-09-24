@@ -513,3 +513,73 @@ describe('over a live MCP session', () => {
     await live.close();
   });
 });
+
+/** Records everything a session can do to a transport, so the seam can be checked for leaks. */
+class SpyTransport implements McpTransport {
+  started = false;
+  closed = false;
+  readonly sent: JsonRpcFrame[] = [];
+  protocolVersion: string | undefined;
+  supportedVersions: string[] | undefined;
+  readonly hasPerRequestStream = true;
+  sessionId = 'session-7';
+  onmessage?: (message: JsonRpcFrame, extra?: unknown) => void;
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+
+  async start(): Promise<void> {
+    this.started = true;
+  }
+  async send(message: JsonRpcFrame): Promise<void> {
+    this.sent.push(message);
+  }
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+  setProtocolVersion(version: string): void {
+    this.protocolVersion = version;
+  }
+  setSupportedProtocolVersions(versions: string[]): void {
+    this.supportedVersions = versions;
+  }
+}
+
+describe('the seam is a faithful transport (§6.2)', () => {
+  it('passes every member of the transport it wraps through to the session', async () => {
+    const inner = new SpyTransport();
+    const seam = new McpAuditTransport(inner, TOOL_CAPABILITY);
+
+    await seam.start();
+    expect(inner.started).toBe(true);
+
+    // The session reads this to choose how it cancels a request; reporting undefined for a transport
+    // that sets it would change how ordinary MCP behaves on this connection.
+    expect(seam.hasPerRequestStream).toBe(true);
+    expect(seam.sessionId).toBe('session-7');
+
+    seam.setProtocolVersion('2026-07-28');
+    expect(inner.protocolVersion).toBe('2026-07-28');
+
+    // Called during connect, for the header validation an HTTP transport performs.
+    seam.setSupportedProtocolVersions(['2026-07-28', '2025-06-18']);
+    expect(inner.supportedVersions).toEqual(['2026-07-28', '2025-06-18']);
+
+    const onerror = (): void => undefined;
+    seam.onerror = onerror;
+    expect(inner.onerror).toBe(onerror);
+
+    await seam.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(inner.sent.at(-1)?.method).toBe('ping');
+
+    await seam.close();
+    expect(inner.closed).toBe(true);
+  });
+
+  it('the host seam passes them through too', async () => {
+    const inner = new SpyTransport();
+    const seam = new McpAuditReceiver(inner, auditHost());
+    expect(seam.hasPerRequestStream).toBe(true);
+    seam.setSupportedProtocolVersions(['2026-07-28']);
+    expect(inner.supportedVersions).toEqual(['2026-07-28']);
+  });
+});
