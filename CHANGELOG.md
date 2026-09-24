@@ -28,6 +28,11 @@ stay symmetric by design.
   since `audit/outcome` has no response channel. `AmcpSession` takes a `witnessVerifier`
   (`WitnessRegistryVerifier`) and enforces §7.2's precedence. `SealedRecord` carries
   `host_signature` / `host_key_id`, absent when unwitnessed.
+- **Atomic numbering (§7.4).** `AmcpSession` holds one section per signer across numbering and
+  emission, so concurrent Level-2 actions reach the host in the order they were numbered. Without
+  it, a remote signer's uneven latency let a later event overtake an earlier one, the host rejected
+  the earlier as a replay, and the ledger recorded `replay-detected` against a tool that had done
+  nothing wrong. Level 1 numbers nothing and is not serialized.
 - **Atomic sealing (§7.1).** `AuditHost` holds one lock per partition across validation, sealing and
   commit. Without it, concurrent attempts against a durable or witnessing host read the same chain
   tail, take the same `seq` and `previous_hash`, and are all answered `accept` - the tool acts on

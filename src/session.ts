@@ -32,6 +32,7 @@ import {
   type TargetResource,
   targetResourceSchema,
 } from './models';
+import { Mutex } from './mutex';
 import * as reasons from './reasons';
 import type { AuditTransport } from './transport';
 
@@ -66,6 +67,36 @@ export class SystemDeps implements Deps {
  * Named for the tool's abort, not host "blocking" — the host never prevents a domain action (§2). A
  * tool surfaces this as a `tools/call` error result.
  */
+/** A section two callers cannot be inside at once. `Mutex` is one; pass-through is the other. */
+interface Section {
+  run<T>(body: () => Promise<T>): Promise<T>;
+}
+
+const PASS_THROUGH: Section = { run: (body) => body() };
+
+/**
+ * §7.4 requires a tool to assign `signer_seq` and emit the event atomically with respect to every
+ * other event under the same `key_id`. The counter lives in the signer and the send lives here, so
+ * neither alone can hold the invariant; the section is keyed on the signer because `signer_seq` is
+ * per key, and sessions serving different `tools/call`s share one signer for one key. Weakly held,
+ * so a signer that goes out of scope takes its section with it.
+ */
+const NUMBERING = new WeakMap<EventSigner, Mutex>();
+
+function numberingSection(signer: EventSigner | undefined): Section {
+  if (signer === undefined) {
+    // Level 1 numbers nothing, so it takes no section: serializing it would cost concurrency the
+    // specification does not ask for.
+    return PASS_THROUGH;
+  }
+  let section = NUMBERING.get(signer);
+  if (section === undefined) {
+    section = new Mutex();
+    NUMBERING.set(signer, section);
+  }
+  return section;
+}
+
 export class AmcpAbortedError extends Error {
   readonly actionType: string;
   readonly targetRef: string;
@@ -122,6 +153,7 @@ export class AmcpSession {
   /** @internal */ readonly _witnessVerifier: WitnessVerifier | undefined;
   /** @internal */ readonly _requireWitness: boolean;
   readonly #signer: EventSigner | undefined;
+  readonly #numbering: Section;
 
   /**
    * Bind the session to a transport, parent call id, id/time deps, and optional L2 signer.
@@ -143,6 +175,7 @@ export class AmcpSession {
     this._transport = transport;
     this._callId = callId;
     this.#signer = options.signer;
+    this.#numbering = numberingSection(options.signer);
     this._deps = options.deps ?? new SystemDeps();
     // Requiring a witness without the means to check one would accept any bytes as a signature, which
     // is worse than not requiring it at all (§11.3 Witness Enforcement).
@@ -175,6 +208,17 @@ export class AmcpSession {
    *
    * @throws {AmcpAbortedError} If the host does not accept, or the Polluted Stop check fails.
    */
+  /**
+   * Number and emit one terminal outcome inside §7.4's section.
+   *
+   * @internal Called by `action` and by the disposer; not part of the public API.
+   */
+  async _emitOutcome(action: AuditedAction, outcome: Outcome, reason?: string): Promise<void> {
+    await this.#numbering.run(async () => {
+      await this._transport.sendOutcome(await action._build(outcome, reason));
+    });
+  }
+
   async action(
     actionType: string,
     targetResource: TargetResource | Record<string, unknown>,
@@ -183,16 +227,21 @@ export class AmcpSession {
     const target = targetResourceSchema.parse(targetResource);
     const action = new AuditedAction(this, this._deps.newId(), actionType, target, options);
 
-    const attempt = await action._build(Outcome.ATTEMPTED);
+    let attempt: Record<string, unknown>;
     let response: AttemptResponse;
     try {
-      response = await this._transport.sendAttempt(attempt);
+      // §7.4: the numbering and the emission are one section, so two concurrent actions under one
+      // key cannot leave in the order their signing happened to finish in.
+      ({ attempt, response } = await this.#numbering.run(async () => {
+        const numbered = await action._build(Outcome.ATTEMPTED);
+        return { attempt: numbered, response: await this._transport.sendAttempt(numbered) };
+      }));
     } catch {
       // §6/§11.3: a JSON-RPC transport fault (vs an `unavailable` result) is handled exactly as
       // `unavailable` — fail closed. Emit a fail-closed aborted outcome for observability, best-effort
       // so a broken transport cannot mask the abort itself.
       try {
-        await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HOST_UNAVAILABLE));
+        await this._emitOutcome(action, Outcome.ABORTED, reasons.HOST_UNAVAILABLE);
       } catch (outcomeError) {
         console.error('auditable-mcp: failed to emit aborted outcome after a transport fault', outcomeError);
       }
@@ -202,7 +251,7 @@ export class AmcpSession {
     if (response.status !== Status.ACCEPT) {
       // reject (invalid) or unavailable (not persisted): do not act; signal aborted (§11.3).
       const reason = response.status === Status.REJECT ? reasons.HOST_REJECTED : reasons.HOST_UNAVAILABLE;
-      await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reason));
+      await this._emitOutcome(action, Outcome.ABORTED, reason);
       throw new AmcpAbortedError(actionType, target.ref, reason);
     }
 
@@ -210,7 +259,7 @@ export class AmcpSession {
     // authenticates the host-assigned fields, then the hash computed over them. The reason is sealed
     // into the ledger and compared across implementations, so the order is not incidental.
     if (this._requireWitness && response.host_signature === undefined) {
-      await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HOST_UNWITNESSED));
+      await this._emitOutcome(action, Outcome.ABORTED, reasons.HOST_UNWITNESSED);
       throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNWITNESSED);
     }
     if (response.host_signature !== undefined && this._witnessVerifier !== undefined) {
@@ -218,7 +267,7 @@ export class AmcpSession {
       const keyId = response.host_key_id as string;
       const payload = witnessPayload(response.seq, response.host_ts, response.previous_hash, response.record_hash);
       if (!(await this._witnessVerifier.verify(keyId, response.host_signature, payload))) {
-        await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HOST_SIGNATURE_INVALID));
+        await this._emitOutcome(action, Outcome.ABORTED, reasons.HOST_SIGNATURE_INVALID);
         throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_SIGNATURE_INVALID);
       }
     }
@@ -228,7 +277,7 @@ export class AmcpSession {
       // the host sealed a different record, so the tool must not act.
       const expected = computeRecordHash(attempt, response.seq, response.host_ts, response.previous_hash);
       if (expected !== response.record_hash) {
-        await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HASH_MISMATCH));
+        await this._emitOutcome(action, Outcome.ABORTED, reasons.HASH_MISMATCH);
         throw new AmcpAbortedError(actionType, target.ref, reasons.HASH_MISMATCH);
       }
     }
@@ -285,7 +334,7 @@ export class AuditedAction implements AsyncDisposable {
     }
     this.#finished = true;
     const outcome = this.#outcome === 'success' ? Outcome.SUCCESS : Outcome.FAILED;
-    await this.#session._transport.sendOutcome(await this._build(outcome));
+    await this.#session._emitOutcome(this, outcome);
   }
 
   /** @internal Build and stamp the wire event for `outcome`, reusing the shared correlation id. */
