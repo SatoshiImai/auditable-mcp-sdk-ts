@@ -77,7 +77,9 @@ class RemoteSigner {
   }
 }
 
-const localSigner = level === Level.L2 ? Ed25519Signer.fromToolKey(toolKey) : undefined;
+const startSignerSeq = Number(env.WALK_START_SIGNER_SEQ ?? '0');
+const localSigner =
+  level === Level.L2 ? Ed25519Signer.fromToolKey(toolKey, { startSignerSeq }) : undefined;
 const signer =
   localSigner !== undefined && env.WALK_SIGNER === 'slow' ? new RemoteSigner(localSigner) : localSigner;
 

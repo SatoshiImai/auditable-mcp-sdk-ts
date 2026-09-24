@@ -72,19 +72,19 @@ export class AwsKmsSigner implements EventSigner {
    * @param client An injected KMS client.
    * @param kmsKeyId The KMS key id/ARN used to sign.
    * @param options `eventKeyId` is the `key_id` stamped into events for the host to resolve (defaults
-   *   to `kmsKeyId`); `signingAlgorithm` defaults to `ECDSA_SHA_256`; `startSequence` is the first
+   *   to `kmsKeyId`); `signingAlgorithm` defaults to `ECDSA_SHA_256`; `startSignerSeq` is the first
    *   per-key sequence value to emit.
    */
   constructor(
     client: KmsClient,
     kmsKeyId: string,
-    options: { eventKeyId?: string; signingAlgorithm?: string; startSequence?: number } = {},
+    options: { eventKeyId?: string; signingAlgorithm?: string; startSignerSeq?: number } = {},
   ) {
     this.#client = client;
     this.#kmsKeyId = kmsKeyId;
     this.#eventKeyId = options.eventKeyId ?? kmsKeyId;
     this.#signingAlgorithm = options.signingAlgorithm ?? DEFAULT_SIGNING_ALGORITHM;
-    this.#nextSequence = options.startSequence ?? 0;
+    this.#nextSequence = options.startSignerSeq ?? 0;
   }
 
   async sign(event: Record<string, unknown>): Promise<Record<string, unknown>> {

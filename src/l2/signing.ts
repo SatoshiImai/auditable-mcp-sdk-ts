@@ -51,17 +51,21 @@ export class Ed25519Signer implements EventSigner {
   readonly #engine: Ed25519Engine;
   #nextSequence: number;
 
-  constructor(keyId: string, privateKey: Uint8Array, options: { engine?: Ed25519Engine; startSequence?: number } = {}) {
+  constructor(
+    keyId: string,
+    privateKey: Uint8Array,
+    options: { engine?: Ed25519Engine; startSignerSeq?: number } = {},
+  ) {
     this.#keyId = keyId;
     this.#privateKey = privateKey;
     this.#engine = options.engine ?? nobleEd25519Engine;
-    this.#nextSequence = options.startSequence ?? 0;
+    this.#nextSequence = options.startSignerSeq ?? 0;
   }
 
   /** Build a signer from a generated tool key. */
   static fromToolKey(
     toolKey: ToolKey,
-    options: { engine?: Ed25519Engine; startSequence?: number } = {},
+    options: { engine?: Ed25519Engine; startSignerSeq?: number } = {},
   ): Ed25519Signer {
     return new Ed25519Signer(toolKey.keyId, toolKey.privateKey, options);
   }

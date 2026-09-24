@@ -10,6 +10,10 @@ stay symmetric by design.
 
 ### Breaking changes
 
+- **`Ed25519Signer` and the KMS signer take `startSignerSeq`**, not `startSequence`. The field it
+  seeds is `signer_seq` (§4) and the Python port has always called it that; a tool resuming its
+  sequence after a restart reaches for the same name in either port now.
+
 - **Emission moves to `auditable-mcp/0.3`**, so every golden digest changes; the verifier stays
   read-lenient and still accepts records sealed under any published version.
 - **`AuditCapability` gains a REQUIRED `witness`** of `none` or `host` (§5.2, §6.1).
