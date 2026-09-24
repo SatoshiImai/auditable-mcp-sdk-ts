@@ -13,6 +13,7 @@ import {
   SignatureAlgorithm,
   signaturePayload,
   signEvent,
+  verifyDetachedSignature,
   verifyEd25519Signature,
 } from '../src/l2';
 import { nodeEd25519Engine } from '../src/node/crypto';
@@ -153,5 +154,65 @@ describe('registry entries are conforming (§5.1)', () => {
     expect(registry.get(tool.keyId)).toBeDefined();
     expect(registry.get('ec')).toBeDefined();
     expect(registry.get('ec-compressed')).toBeDefined();
+  });
+});
+
+describe('a signature of the wrong shape (§5.1)', () => {
+  it('a non-string signature does not verify', () => {
+    const key = generateToolKey('k');
+    expect(verifyEd25519Signature({ ...makeAttempt(eventIdAt(1)), signature: 12345 }, key.publicKey)).toBe(false);
+  });
+
+  it('an undecodable signature does not verify', () => {
+    const key = generateToolKey('k');
+    expect(verifyEd25519Signature({ ...makeAttempt(eventIdAt(1)), signature: 'not base64!' }, key.publicKey)).toBe(
+      false,
+    );
+  });
+
+  it('an undecodable detached signature does not verify', () => {
+    const registry = new KeyRegistry(KeyRole.HOST);
+    const key = generateToolKey('h1');
+    registry.register('h1', key.publicKey, SignatureAlgorithm.ED25519);
+    const entry = registry.get('h1');
+    expect(entry).toBeDefined();
+    expect(verifyDetachedSignature(new Uint8Array([1]), 'not base64!', entry as never)).toBe(false);
+  });
+
+  it('an ECDSA witness signature verifies against its registry entry', () => {
+    // A heterogeneous fleet witnesses with KMS keys too, so the detached path runs both algorithms.
+    const secret = p256.utils.randomSecretKey();
+    const registry = new KeyRegistry(KeyRole.HOST);
+    registry.register('h-ec', p256.getPublicKey(secret, false), SignatureAlgorithm.ECDSA_P256_SHA256);
+    const entry = registry.get('h-ec');
+    expect(entry).toBeDefined();
+    const payload = new TextEncoder().encode('{"host_ts":"2026-07-15T00:00:01.000Z"}');
+    const raw = p256.sign(sha256(payload), secret).toBytes('compact');
+    expect(verifyDetachedSignature(payload, bytesToBase64(raw), entry as never)).toBe(true);
+    expect(verifyDetachedSignature(new TextEncoder().encode('other'), bytesToBase64(raw), entry as never)).toBe(false);
+  });
+
+  it('the offline signature checker matches the host-side verdict (§11.4)', async () => {
+    const key = generateToolKey('k1');
+    const registry = new KeyRegistry();
+    registry.registerToolKey(key);
+    const checker = new KeyRegistryVerifier(registry);
+    const signed = signEvent(makeAttempt(eventIdAt(1)), 'k1', 0, key.privateKey);
+    expect(checker.check(signed)).toBe(true);
+    expect(checker.check({ ...signed, signature: bytesToBase64(new Uint8Array(64)) })).toBe(false);
+  });
+});
+
+describe('registry re-registration (§10.9)', () => {
+  it('refuses a key_id already bound to a key of a different length', () => {
+    // bytesEqual short-circuits on length; a P-256 point replacing an Ed25519 key is the case.
+    const registry = new KeyRegistry();
+    registry.registerToolKey(generateToolKey('k1'));
+    expect(() =>
+      registry.register('k1', p256.getPublicKey(p256.utils.randomSecretKey(), false), SignatureAlgorithm.ED25519),
+    ).toThrow('§5.1');
+    expect(() => registry.register('k1', generateToolKey('other').publicKey, SignatureAlgorithm.ED25519)).toThrow(
+      '§10.9',
+    );
   });
 });

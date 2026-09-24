@@ -240,3 +240,45 @@ describe('an outcome that fails Level-2 validation (§6, §8.3)', () => {
     expect(host.anomalies().some((a) => a.kind === 'replay-detected')).toBe(true);
   });
 });
+
+describe('the outcome channel’s remaining paths (§6, §10.8)', () => {
+  it('an outcome with an uncanonicalizable number is dropped and flagged', async () => {
+    // §8.1 applies on both channels, and §6 leaves the anomaly set as the only place to say so.
+    const host = new AuditHost('tenant-a', undefined, { clock: new MonotonicClock() });
+    const attempt = makeAttempt(eventIdAt(1));
+    await host.handleAttempt(attempt);
+    const before = host.records().length;
+    await host.handleOutcome({ ...attempt, outcome: 'success', action_context: { rows: 2 ** 53 } });
+    expect(host.records()).toHaveLength(before);
+    expect(host.anomalies().some((a) => a.kind === 'schema-invalid')).toBe(true);
+  });
+
+  it('a correlated outcome that cannot be persisted is lost, not flagged as tampering', async () => {
+    // §10.8: a lost outcome is a completeness gap, and `internal-error` is not an anomaly kind.
+    const host = new AuditHost('tenant-a', undefined, {
+      clock: new MonotonicClock(),
+      repository: new FailingRepository(),
+    });
+    const attempt = makeAttempt(eventIdAt(1));
+    // The attempt cannot be sealed either, so correlate it directly and then lose the outcome.
+    await host.handleAttempt(attempt);
+    await host.handleOutcome({ ...attempt, outcome: 'success' });
+    expect(host.records()).toHaveLength(0);
+    expect(host.anomalies().every((a) => a.kind !== 'internal-error')).toBe(true);
+  });
+
+  it('an outcome after its attempt was rejected is an orphan (§7.2)', async () => {
+    // The attempt is refused and the outcome is well-formed, which is the post-reject orphan the
+    // never-accepted one rolls up with (§7.6): the finer distinction is a local detail.
+    const verifier = {
+      async verify(event: Record<string, unknown>) {
+        return event.signature === 'forged' ? ('signature-invalid' as const) : null;
+      },
+    };
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier, clock: new MonotonicClock() });
+    const attempt = { ...signed(makeAttempt(eventIdAt(1)), 1), signature: 'forged' };
+    expect((await host.handleAttempt(attempt)).status).toBe('reject');
+    await host.handleOutcome(signed({ ...makeAttempt(eventIdAt(1)), outcome: 'success' }, 2));
+    expect(host.anomalies().some((a) => a.kind === 'orphaned-outcome')).toBe(true);
+  });
+});
