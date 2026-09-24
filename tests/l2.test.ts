@@ -9,6 +9,7 @@ import {
   generateToolKey,
   KeyRegistry,
   KeyRegistryVerifier,
+  KeyRole,
   SignatureAlgorithm,
   signaturePayload,
   signEvent,
@@ -116,5 +117,41 @@ describe('Level 2 tool-to-host with real crypto', () => {
     expect(result).toBe('done');
     expect(host.records()).toHaveLength(2);
     expect(verifyLedger(host.records(), host.digest()).ok).toBe(true);
+  });
+});
+
+describe('registry entries are conforming (§5.1)', () => {
+  it('an entry cannot bind a key of another algorithm', () => {
+    const registry = new KeyRegistry(KeyRole.HOST);
+    const ecPoint = p256.getPublicKey(p256.utils.randomSecretKey(), false);
+    expect(() => registry.register('k1', ecPoint, SignatureAlgorithm.ED25519)).toThrow('§5.1');
+    expect(() => registry.register('k2', generateToolKey('t').publicKey, SignatureAlgorithm.ECDSA_P256_SHA256)).toThrow(
+      '§5.1',
+    );
+  });
+
+  it('an entry cannot bind an empty key_id', () => {
+    const registry = new KeyRegistry();
+    expect(() => registry.register('', generateToolKey('t').publicKey, SignatureAlgorithm.ED25519)).toThrow(
+      'non-empty',
+    );
+  });
+
+  it('an entry cannot bind key material of the wrong length', () => {
+    const registry = new KeyRegistry();
+    expect(() => registry.register('k', new Uint8Array(0), SignatureAlgorithm.ED25519)).toThrow('§5.1');
+    expect(() => registry.register('k', new Uint8Array(64), SignatureAlgorithm.ED25519)).toThrow('§5.1');
+  });
+
+  it('a conforming entry still registers, compressed point included', () => {
+    const registry = new KeyRegistry();
+    const tool = generateToolKey('t');
+    registry.registerToolKey(tool);
+    const secret = p256.utils.randomSecretKey();
+    registry.register('ec', p256.getPublicKey(secret, false), SignatureAlgorithm.ECDSA_P256_SHA256);
+    registry.register('ec-compressed', p256.getPublicKey(secret, true), SignatureAlgorithm.ECDSA_P256_SHA256);
+    expect(registry.get(tool.keyId)).toBeDefined();
+    expect(registry.get('ec')).toBeDefined();
+    expect(registry.get('ec-compressed')).toBeDefined();
   });
 });

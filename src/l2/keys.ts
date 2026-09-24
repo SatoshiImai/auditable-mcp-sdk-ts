@@ -35,6 +35,22 @@ export interface RegisteredKey {
   publicKey: Uint8Array;
 }
 
+/** Ed25519 public keys are 32 raw bytes [RFC-8032]. */
+const ED25519_PUBLIC_KEY_BYTES = 32;
+/** P-256 points are SEC1: 65 bytes uncompressed (0x04) or 33 compressed (0x02/0x03) [FIPS-186-5]. */
+const P256_UNCOMPRESSED_BYTES = 65;
+const P256_COMPRESSED_BYTES = 33;
+
+function keyLengthFits(publicKey: Uint8Array, algorithm: SignatureAlgorithm): boolean {
+  if (algorithm === SignatureAlgorithm.ED25519) {
+    return publicKey.length === ED25519_PUBLIC_KEY_BYTES;
+  }
+  if (publicKey.length === P256_UNCOMPRESSED_BYTES) {
+    return publicKey[0] === 0x04;
+  }
+  return publicKey.length === P256_COMPRESSED_BYTES && (publicKey[0] === 0x02 || publicKey[0] === 0x03);
+}
+
 /** Generate a fresh Ed25519 tool key under `key_id` (using the injected engine; noble by default). */
 export function generateToolKey(keyId: string, engine: Ed25519Engine = nobleEd25519Engine): ToolKey {
   const { publicKey, privateKey } = engine.generateKeyPair();
@@ -90,6 +106,15 @@ export class KeyRegistry {
    *   use a fresh `key_id`). Re-registering the same key is idempotent.
    */
   register(keyId: string, publicKey: Uint8Array, algorithm: SignatureAlgorithm): void {
+    if (keyId.length === 0) {
+      throw new Error('a registry entry binds a non-empty key_id (§5.1)');
+    }
+    // §5.1: the public key MUST be a key of the entry's algorithm, and a disagreeing entry is refused
+    // here rather than carried to verification time, where every event bound to it would be rejected
+    // signature-invalid - a forged signature, which is not what went wrong.
+    if (!keyLengthFits(publicKey, algorithm)) {
+      throw new Error(`a ${algorithm} entry does not bind a ${publicKey.length}-byte key (§5.1)`);
+    }
     const existing = this.#keys.get(keyId);
     if (existing !== undefined && (existing.algorithm !== algorithm || !bytesEqual(existing.publicKey, publicKey))) {
       throw new Error(`key_id '${keyId}' is already registered with a different key (§10.9)`);
