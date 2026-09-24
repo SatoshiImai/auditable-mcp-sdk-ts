@@ -40,6 +40,18 @@ export interface ChainVector {
   digest?: string;
 }
 
+/** A record of the witnessed chain: a chain record plus the §7.1 witness signature and its preimage. */
+export interface WitnessedChainRecord extends ChainRecord {
+  host_signature: string;
+  host_key_id: string;
+  witness_preimage: { canonical: string; sha256: string };
+}
+
+export interface WitnessedChainVector {
+  records: WitnessedChainRecord[];
+  digest: string;
+}
+
 export interface ErrorCase {
   name: string;
   channel: 'attempt' | 'outcome';
@@ -51,4 +63,5 @@ export const canonicalizationVectors = load<CanonicalizationVector[]>('canonical
 export const eventVectors = load<EventVector[]>('events.json');
 export const chainVector = load<ChainVector>('chain.json');
 export const chainSignedVector = load<ChainVector>('chain-signed.json');
+export const chainWitnessedVector = load<WitnessedChainVector>('chain-witnessed.json');
 export const errorCases = load<ErrorCase[]>('error-cases.json');

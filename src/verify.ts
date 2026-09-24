@@ -10,7 +10,7 @@
  */
 
 import * as fields from './fields';
-import { computeRecordHash, GENESIS_HASH } from './hashing';
+import { computeRecordHash, GENESIS_HASH, witnessPayload } from './hashing';
 import type { SealedRecord } from './ledger';
 import { firstSealedValidationError, Outcome } from './models';
 import * as reasons from './reasons';
@@ -33,11 +33,30 @@ export interface VerifyIssue {
 
 /** The result of verifying a ledger; `ok` is true only when `issues` is empty. */
 export interface VerifyReport {
+  /** True when the checks that ran found nothing. Not the same as having checked everything. */
   ok: boolean;
   count: number;
   computedDigest: string;
   issues: VerifyIssue[];
+  /**
+   * Checks that were applicable and did not run (§11.4).
+   *
+   * Witness determination and Level-2 signature re-verification both need an out-of-band registry,
+   * and a verifier without one performs neither. §11.4 requires that to be reported rather than left
+   * as an absence of anomalies - an unchecked signature and a valid one are not the same finding.
+   */
+  unchecked: readonly string[];
+  /** True when nothing was found and nothing applicable was skipped (§11.4). */
+  complete: boolean;
 }
+
+/**
+ * Resolves a `host_key_id` and verifies a detached signature over canonical bytes (§7.1).
+ *
+ * Synchronous because offline ledger verification reads stored records and does no I/O;
+ * `WitnessRegistryVerifier.check` is the registry-backed implementation.
+ */
+export type WitnessChecker = (hostKeyId: string, signature: string, payload: Uint8Array) => boolean;
 
 /**
  * How the verifier reads a-MCP correlation fields, the embedded event, and the governed identity.
@@ -104,10 +123,12 @@ export function verifyChain(
   anchoredDigest?: string,
   adapter: RecordAdapter = DEFAULT_ADAPTER,
   expectedPrincipal?: unknown,
+  witnessChecker?: WitnessChecker,
 ): VerifyReport {
   const issues: VerifyIssue[] = [];
   const attemptedIds = new Set<unknown>();
   let prevRecomputed = GENESIS_HASH;
+  let witnessUnchecked = false;
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -163,6 +184,22 @@ export function verifyChain(
       });
     }
 
+    // Witness determination (§11.4): by the signature alone, never inferred from another field.
+    if (record.host_signature !== undefined && record.host_key_id !== undefined) {
+      if (witnessChecker === undefined) {
+        witnessUnchecked = true;
+      } else {
+        const payload = witnessPayload(record.seq, record.host_ts, record.previous_hash, record.record_hash);
+        if (!witnessChecker(record.host_key_id, record.host_signature, payload)) {
+          issues.push({
+            seq: record.seq,
+            kind: reasons.HOST_SIGNATURE_INVALID,
+            detail: `witness signature does not verify for host_key_id ${record.host_key_id}`,
+          });
+        }
+      }
+    }
+
     prevRecomputed = recomputed;
   }
 
@@ -175,7 +212,15 @@ export function verifyChain(
     });
   }
 
-  return { ok: issues.length === 0, count: records.length, computedDigest, issues };
+  const unchecked = witnessUnchecked ? (['witness'] as const) : ([] as const);
+  return {
+    ok: issues.length === 0,
+    count: records.length,
+    computedDigest,
+    issues,
+    unchecked,
+    complete: issues.length === 0 && unchecked.length === 0,
+  };
 }
 
 /**
@@ -199,8 +244,9 @@ export function verifyLedger(
   anchoredDigest?: string,
   adapter: RecordAdapter = DEFAULT_ADAPTER,
   expectedPrincipal?: unknown,
+  witnessChecker?: WitnessChecker,
 ): VerifyReport {
-  const report = verifyChain(records, anchoredDigest, adapter, expectedPrincipal);
+  const report = verifyChain(records, anchoredDigest, adapter, expectedPrincipal, witnessChecker);
   const schemaIssues: VerifyIssue[] = [];
   for (const record of records) {
     const structural = firstSealedValidationError(adapter.eventOf(record.event));
@@ -216,5 +262,7 @@ export function verifyLedger(
     count: report.count,
     computedDigest: report.computedDigest,
     issues: [...report.issues, ...schemaIssues],
+    unchecked: report.unchecked,
+    complete: false,
   };
 }

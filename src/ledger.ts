@@ -23,6 +23,10 @@ export interface SealedRecord {
   readonly host_ts: string;
   readonly previous_hash: string;
   readonly record_hash: string;
+  // The witness (§5.2): written by a host that declares `witness: "host"`, absent otherwise. Absent
+  // fields are omitted from the persisted JSON, so an unwitnessed record stores exactly as before v0.3.
+  readonly host_signature?: string;
+  readonly host_key_id?: string;
 }
 
 /** An append-only, single-partition, tamper-evident ledger. */

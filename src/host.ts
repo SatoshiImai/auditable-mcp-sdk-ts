@@ -16,6 +16,7 @@
 import { hasUnsafeNumber } from './canonical';
 import { type Clock, SystemClock } from './clock';
 import * as fields from './fields';
+import { witnessPayload } from './hashing';
 import { Ledger, type SealedRecord } from './ledger';
 import {
   type AttemptResponse,
@@ -54,8 +55,23 @@ export interface SignatureVerifier {
 /** Options for constructing an {@link AuditHost}. */
 export interface AuditHostOptions {
   verifier?: SignatureVerifier;
+  witnessSigner?: WitnessSigner;
   repository?: LedgerRepository;
   clock?: Clock;
+}
+
+/**
+ * Signs the host-assigned fields of a record this host sealed (§5.2, §7.1).
+ *
+ * `sign` is async for the same reason `EventSigner.sign` is: a production host signs through a
+ * network HSM or KMS. The payload is already canonical (`witnessPayload`), so a signer does
+ * cryptography only - the preimage is built in one place, by the host.
+ */
+export interface WitnessSigner {
+  /** The `host_key_id` a verifier's registry binds to this host. */
+  readonly keyId: string;
+  /** Return the standard-base64 detached signature over `payload`. */
+  sign(payload: Uint8Array): Promise<string>;
 }
 
 /** A partial host self-declaration: unset fields are filled from the SDK's own capability defaults. */
@@ -75,6 +91,7 @@ export class AuditHost implements AuditEndpoint {
   readonly #capability: AuditCapability;
   readonly #ledger: Ledger;
   readonly #verifier: SignatureVerifier | undefined;
+  readonly #witnessSigner: WitnessSigner | undefined;
   readonly #repository: LedgerRepository | undefined;
   readonly #clock: Clock;
   readonly #acceptedAttempts = new Set<string>();
@@ -89,7 +106,8 @@ export class AuditHost implements AuditEndpoint {
    * acknowledged; a persistence failure fails closed (§7.1). Use {@link AuditHost.resume} to restart
    * a host from a persisted chain.
    *
-   * @throws {Error} If the required level is Level 2 but no `verifier` was provided.
+   * @throws {Error} If the required level is Level 2 but no `verifier` was provided, or the host
+   *   declares `witness: "host"` but no `witnessSigner` was provided.
    */
   constructor(partition: string, capability: AuditCapabilityInput = {}, options: AuditHostOptions = {}) {
     // The host's own capability: complete the partial self-declaration with the SDK's explicit
@@ -105,10 +123,16 @@ export class AuditHost implements AuditEndpoint {
     if (resolved.level === Level.L2 && options.verifier === undefined) {
       throw new Error('an L2 host requires a SignatureVerifier');
     }
+    // A host that declares it signs and then does not would leave every record unwitnessed while its
+    // peers expect otherwise; the declaration is refused at construction instead (§11.2).
+    if (resolved.witness === Witness.HOST && options.witnessSigner === undefined) {
+      throw new Error('a host declaring witness "host" requires a WitnessSigner');
+    }
     this.#partition = partition;
     this.#capability = resolved;
     this.#ledger = new Ledger(partition);
     this.#verifier = options.verifier;
+    this.#witnessSigner = options.witnessSigner;
     this.#repository = options.repository;
     this.#clock = options.clock ?? new SystemClock();
   }
@@ -163,7 +187,16 @@ export class AuditHost implements AuditEndpoint {
 
   /** Seal `event`, persist it if a repository is configured, then commit; null on persistence failure. */
   async #seal(event: Record<string, unknown>, hostTs: string): Promise<SealedRecord | null> {
-    const sealed = this.#ledger.seal(event, hostTs);
+    let sealed = this.#ledger.seal(event, hostTs);
+    // Sign before persisting, so the signature is stored with the record it covers (§7.1, §7.2).
+    if (this.#witnessSigner !== undefined) {
+      const payload = witnessPayload(sealed.seq, sealed.host_ts, sealed.previous_hash, sealed.record_hash);
+      sealed = {
+        ...sealed,
+        host_signature: await this.#witnessSigner.sign(payload),
+        host_key_id: this.#witnessSigner.keyId,
+      };
+    }
     if (this.#repository !== undefined) {
       try {
         await this.#repository.append(this.#partition, sealed);
@@ -268,7 +301,10 @@ export class AuditHost implements AuditEndpoint {
     this.#acceptedAttempts.add(id);
     this.#advanceSeq(event);
     // Verifiable Accept (§7.1): return the host-assigned fields the tool needs for Polluted Stop.
-    return accept(sealed.seq, sealed.record_hash, sealed.host_ts, sealed.previous_hash);
+    return accept(sealed.seq, sealed.record_hash, sealed.host_ts, sealed.previous_hash, {
+      hostSignature: sealed.host_signature,
+      hostKeyId: sealed.host_key_id,
+    });
   }
 
   /** Seal a correlated outcome, or flag an uncorrelated one; drop invalid records (§7.2). */

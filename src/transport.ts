@@ -26,8 +26,25 @@ import {
 } from './models';
 
 /** Build a Verifiable Accept carrying the fields the tool needs for Polluted Stop (§7.1). */
-export function accept(seq: number, recordHash: string, hostTs: string, previousHash: string): AcceptResponse {
-  return { status: Status.ACCEPT, seq, record_hash: recordHash, host_ts: hostTs, previous_hash: previousHash };
+export function accept(
+  seq: number,
+  recordHash: string,
+  hostTs: string,
+  previousHash: string,
+  witness: { hostSignature?: string | undefined; hostKeyId?: string | undefined } = {},
+): AcceptResponse {
+  const response: AcceptResponse = {
+    status: Status.ACCEPT,
+    seq,
+    record_hash: recordHash,
+    host_ts: hostTs,
+    previous_hash: previousHash,
+  };
+  // The pair appears together or not at all (§7.1), so both are set or neither is.
+  if (witness.hostSignature !== undefined && witness.hostKeyId !== undefined) {
+    return { ...response, host_signature: witness.hostSignature, host_key_id: witness.hostKeyId };
+  }
+  return response;
 }
 
 /** Build a reject response with a Tier-1 reject `reason` (ledger integrity not guaranteed, §7.1). */

@@ -21,7 +21,7 @@
 
 import { hashCanonical } from './canonical';
 import { type Clock, nowIso } from './clock';
-import { computeRecordHash } from './hashing';
+import { computeRecordHash, witnessPayload } from './hashing';
 import {
   type AcceptResponse,
   type AttemptResponse,
@@ -81,6 +81,18 @@ export class AmcpAbortedError extends Error {
 }
 
 /** The effect + confidentiality descriptors for one audited operation (§4.2, §4.3). */
+/**
+ * Verifies a host's witness signature over the accept's host-assigned fields (§5.2, §7.1).
+ *
+ * The payload is supplied already canonical, so a verifier resolves the key and does cryptography
+ * only. A `host_key_id` with no current registry entry - never registered, or revoked - returns
+ * false: the witness is not established either way (§10.9).
+ */
+export interface WitnessVerifier {
+  /** Return true if the signature verifies against the registered host key. */
+  verify(hostKeyId: string, signature: string, payload: Uint8Array): Promise<boolean>;
+}
+
 export interface ActionOptions {
   mutates: boolean;
   egress: boolean;
@@ -107,6 +119,8 @@ export class AmcpSession {
   /** @internal */ readonly _callId: string;
   /** @internal */ readonly _deps: Deps;
   /** @internal */ readonly _pollutedStop: boolean;
+  /** @internal */ readonly _witnessVerifier: WitnessVerifier | undefined;
+  /** @internal */ readonly _requireWitness: boolean;
   readonly #signer: EventSigner | undefined;
 
   /**
@@ -118,13 +132,26 @@ export class AmcpSession {
   constructor(
     transport: AuditTransport,
     callId: string,
-    options: { signer?: EventSigner; deps?: Deps; pollutedStop?: boolean } = {},
+    options: {
+      signer?: EventSigner;
+      deps?: Deps;
+      pollutedStop?: boolean;
+      witnessVerifier?: WitnessVerifier;
+      requireWitness?: boolean;
+    } = {},
   ) {
     this._transport = transport;
     this._callId = callId;
     this.#signer = options.signer;
     this._deps = options.deps ?? new SystemDeps();
+    // Requiring a witness without the means to check one would accept any bytes as a signature, which
+    // is worse than not requiring it at all (§11.3 Witness Enforcement).
+    if (options.requireWitness === true && options.witnessVerifier === undefined) {
+      throw new Error('requireWitness needs a WitnessVerifier');
+    }
     this._pollutedStop = options.pollutedStop ?? options.signer !== undefined;
+    this._witnessVerifier = options.witnessVerifier;
+    this._requireWitness = options.requireWitness ?? false;
   }
 
   /** @internal Sign the event under Level 2, or return it unchanged under Level 1. */
@@ -171,6 +198,23 @@ export class AmcpSession {
       const reason = response.status === Status.REJECT ? reasons.HOST_REJECTED : reasons.HOST_UNAVAILABLE;
       await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reason));
       throw new AmcpAbortedError(actionType, target.ref, reason);
+    }
+
+    // §7.2 evaluates in precedence order: the response's status above, then the witness signature that
+    // authenticates the host-assigned fields, then the hash computed over them. The reason is sealed
+    // into the ledger and compared across implementations, so the order is not incidental.
+    if (this._requireWitness && response.host_signature === undefined) {
+      await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HOST_UNWITNESSED));
+      throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNWITNESSED);
+    }
+    if (response.host_signature !== undefined && this._witnessVerifier !== undefined) {
+      // The pair is refined to appear together, so the key id is present with the signature (§7.1).
+      const keyId = response.host_key_id as string;
+      const payload = witnessPayload(response.seq, response.host_ts, response.previous_hash, response.record_hash);
+      if (!(await this._witnessVerifier.verify(keyId, response.host_signature, payload))) {
+        await this._transport.sendOutcome(await action._build(Outcome.ABORTED, reasons.HOST_SIGNATURE_INVALID));
+        throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_SIGNATURE_INVALID);
+      }
     }
 
     if (this._pollutedStop) {

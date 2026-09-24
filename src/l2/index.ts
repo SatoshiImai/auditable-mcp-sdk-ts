@@ -18,5 +18,11 @@ export {
   type ReconcileAnomaly,
   reconcile,
 } from './reconcile';
-export { Ed25519Signer, signaturePayload, signEvent } from './signing';
-export { KeyRegistryVerifier, verifyEcdsaSignature, verifyEd25519Signature } from './verification';
+export { Ed25519Signer, Ed25519WitnessSigner, signaturePayload, signEvent } from './signing';
+export {
+  KeyRegistryVerifier,
+  verifyDetachedSignature,
+  verifyEcdsaSignature,
+  verifyEd25519Signature,
+  WitnessRegistryVerifier,
+} from './verification';

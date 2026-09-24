@@ -16,7 +16,7 @@ import * as fields from '../fields';
 import type { SignatureVerifier } from '../host';
 import type { RejectReason } from '../models';
 import * as reasons from '../reasons';
-import { type KeyRegistry, SignatureAlgorithm } from './keys';
+import { type KeyRegistry, type RegisteredKey, SignatureAlgorithm } from './keys';
 import { signaturePayload } from './signing';
 
 function decodeSignature(event: Record<string, unknown>): Uint8Array | null {
@@ -99,5 +99,70 @@ export class KeyRegistryVerifier implements SignatureVerifier {
         ? verifyEd25519Signature(event, entry.publicKey, this.#ed25519Engine)
         : verifyEcdsaSignature(event, entry.publicKey, this.#ecdsaVerify);
     return verified ? null : reasons.SIGNATURE_INVALID;
+  }
+}
+
+/**
+ * Return true if a detached base64 signature over already-canonical `payload` verifies.
+ *
+ * Unlike the event-level helpers above, the payload is supplied rather than derived, so this serves a
+ * signature whose preimage is not an event - the witness signature over the host-assigned fields
+ * (§7.1). The algorithm comes from the registry entry, as for events (§5.1).
+ */
+export function verifyDetachedSignature(
+  payload: Uint8Array,
+  signatureB64: string,
+  entry: RegisteredKey,
+  engines: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify } = {},
+): boolean {
+  let signature: Uint8Array;
+  try {
+    signature = base64ToBytes(signatureB64);
+  } catch {
+    return false;
+  }
+  try {
+    return entry.algorithm === SignatureAlgorithm.ED25519
+      ? (engines.ed25519Engine ?? nobleEd25519Engine).verify(payload, signature, entry.publicKey)
+      : (engines.ecdsaVerify ?? nobleEcdsaVerify)(payload, signature, entry.publicKey);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A tool-side witness verifier backed by the out-of-band registry of host keys (§7.1, §10.9).
+ *
+ * The witness registry has the same shape and the same algorithm identifiers as the Level-2 one and
+ * never shares an entry with it. A `host_key_id` with no current entry - never registered, or revoked
+ * - does not establish the witness, which maps onto `host-signature-invalid` rather than earning a
+ * code of its own (§7.6, §10.9).
+ */
+export class WitnessRegistryVerifier {
+  readonly #registry: KeyRegistry;
+  readonly #engines: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify };
+
+  constructor(registry: KeyRegistry, options: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify } = {}) {
+    this.#registry = registry;
+    this.#engines = options;
+  }
+
+  /**
+   * Return true if the signature verifies against the registered host key (synchronous).
+   *
+   * Offline ledger verification (§11.4) is synchronous and reads stored records, so it uses this
+   * directly; `verify` is the async form the tool-side seam expects.
+   */
+  check = (hostKeyId: string, signature: string, payload: Uint8Array): boolean => {
+    const entry = this.#registry.get(hostKeyId);
+    if (entry === undefined) {
+      return false;
+    }
+    return verifyDetachedSignature(payload, signature, entry, this.#engines);
+  };
+
+  /** Return true if the signature verifies against the registered host key (local, no I/O). */
+  async verify(hostKeyId: string, signature: string, payload: Uint8Array): Promise<boolean> {
+    return this.check(hostKeyId, signature, payload);
   }
 }

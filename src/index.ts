@@ -27,6 +27,7 @@ export {
 } from './capability';
 export { type Clock, nowIso, SystemClock } from './clock';
 export type { EcdsaVerify, Ed25519Engine, Ed25519KeyPair } from './crypto/engine';
+export { Posture, transportFor, UnnegotiatedSessionError } from './degradation';
 export { computeRecordHash, GENESIS_HASH } from './hashing';
 export {
   type AuditCapabilityInput,

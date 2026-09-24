@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { computeRecordHash, GENESIS_HASH } from '../src/hashing';
-import { chainVector } from './vectors';
+import { sha256Hex } from '../src/canonical';
+import { computeRecordHash, GENESIS_HASH, witnessPayload } from '../src/hashing';
+import { chainVector, chainWitnessedVector } from './vectors';
 
 describe('computeRecordHash reproduces the golden chain byte-for-byte', () => {
   for (const record of chainVector.records) {
@@ -30,5 +31,28 @@ describe('computeRecordHash reproduces the golden chain byte-for-byte', () => {
 describe('GENESIS_HASH', () => {
   it('is 64 zeros', () => {
     expect(GENESIS_HASH).toBe('0'.repeat(64));
+  });
+});
+
+describe('witness signature preimage (§7.1, §8.4)', () => {
+  it('reproduces the golden bytes for every record', () => {
+    for (const record of chainWitnessedVector.records) {
+      const payload = witnessPayload(record.seq, record.host_ts, record.previous_hash, record.record_hash);
+      expect(new TextDecoder().decode(payload)).toBe(record.witness_preimage.canonical);
+      expect(sha256Hex(record.witness_preimage.canonical)).toBe(record.witness_preimage.sha256);
+    }
+  });
+
+  it('the witnessed chain hashes identically to the unwitnessed one (§5.2)', () => {
+    expect(chainWitnessedVector.digest).toBe(chainVector.digest);
+    let previous = GENESIS_HASH;
+    for (const [index, witnessed] of chainWitnessedVector.records.entries()) {
+      const plain = chainVector.records[index];
+      const computed = computeRecordHash(witnessed.event, witnessed.seq, witnessed.host_ts, previous);
+      expect(computed).toBe(witnessed.record_hash);
+      expect(computed).toBe(plain?.record_hash);
+      expect(witnessed.host_signature).toBeTruthy();
+      previous = computed;
+    }
   });
 });
