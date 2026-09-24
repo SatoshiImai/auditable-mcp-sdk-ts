@@ -28,6 +28,11 @@ stay symmetric by design.
   since `audit/outcome` has no response channel. `AmcpSession` takes a `witnessVerifier`
   (`WitnessRegistryVerifier`) and enforces §7.2's precedence. `SealedRecord` carries
   `host_signature` / `host_key_id`, absent when unwitnessed.
+- **Atomic sealing (§7.1).** `AuditHost` holds one lock per partition across validation, sealing and
+  commit. Without it, concurrent attempts against a durable or witnessing host read the same chain
+  tail, take the same `seq` and `previous_hash`, and are all answered `accept` - the tool acts on
+  records the ledger cannot hold. The in-memory, unwitnessed host was the only configuration without
+  the window, which is why the suite never saw it.
 - **`transportFor`** picks what §6.2 permits for a session that was not negotiated, and refuses to
   return a transport for the third, non-conformant posture.
 - **The MCP wire binding** (`auditable-mcp-sdk/mcp`). `McpAuditTransport` (tool) and

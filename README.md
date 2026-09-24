@@ -23,6 +23,8 @@ What this SDK does:
   default engine is universal (noble); a `node:crypto` engine ships as a drop-in alternative.
 - The durable-ledger lifecycle — seal-before-accept, fail-closed on a persistence error, and
   resume-after-restart — over a `LedgerRepository` interface you implement.
+- Atomic sealing (§7.1): one lock per partition, so concurrent attempts take distinct positions in
+  the chain rather than the same one.
 
 What it does not do (your concern, via adapters):
 

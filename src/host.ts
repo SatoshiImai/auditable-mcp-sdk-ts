@@ -29,6 +29,7 @@ import {
   SPEC_VERSION,
   Witness,
 } from './models';
+import { Mutex } from './mutex';
 import * as reasons from './reasons';
 import { type LedgerRepository, RepositoryError } from './storage/repository';
 import { type AuditEndpoint, accept, reject, unavailable } from './transport';
@@ -94,6 +95,8 @@ export class AuditHost implements AuditEndpoint {
   readonly #witnessSigner: WitnessSigner | undefined;
   readonly #repository: LedgerRepository | undefined;
   readonly #clock: Clock;
+  // One lock per host is one lock per partition (§10.5); §7.1 constrains nothing across them.
+  readonly #lock = new Mutex();
   readonly #acceptedAttempts = new Set<string>();
   readonly #rejectedIds = new Set<string>();
   readonly #lastSeqByKey = new Map<string, number>();
@@ -275,7 +278,18 @@ export class AuditHost implements AuditEndpoint {
   }
 
   /** Validate and, if durable, seal an attempt; otherwise reject or fail closed (§7.1). */
+  /**
+   * Held under the partition's lock: §7.1 requires the assignment of `seq` and `previous_hash`, the
+   * seal, and the commit to be atomic with respect to every other record being sealed into the same
+   * partition. Signing and persistence sit between those steps, so without the lock two attempts read
+   * the same chain tail and take the same position - and the host answers `accept` to both. The
+   * attempt `id`-uniqueness check (§7.1) is inside the same section for the same reason.
+   */
   async handleAttempt(event: Record<string, unknown>): Promise<AttemptResponse> {
+    return this.#lock.run(() => this.#handleAttempt(event));
+  }
+
+  async #handleAttempt(event: Record<string, unknown>): Promise<AttemptResponse> {
     const error = firstValidationError(event);
     if (error !== null) {
       this.#flag(eventId(event), reasons.SCHEMA_INVALID, error);
@@ -321,7 +335,12 @@ export class AuditHost implements AuditEndpoint {
   }
 
   /** Seal a correlated outcome, or flag an uncorrelated one; drop invalid records (§7.2). */
+  /** Held under the same lock as `handleAttempt`: an outcome seals into the same chain (§8.3). */
   async handleOutcome(event: Record<string, unknown>): Promise<void> {
+    await this.#lock.run(() => this.#handleOutcome(event));
+  }
+
+  async #handleOutcome(event: Record<string, unknown>): Promise<void> {
     const error = firstValidationError(event);
     if (error !== null) {
       this.#flag(eventId(event), reasons.SCHEMA_INVALID, error);
