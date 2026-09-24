@@ -18,7 +18,13 @@ export {
   MAX_SAFE_INTEGER,
   sha256Hex,
 } from './canonical';
-export { capabilitySatisfies, type NegotiationResult, negotiate } from './capability';
+export {
+  levelSatisfies,
+  NegotiationOutcome,
+  type NegotiationResult,
+  negotiate,
+  witnessSatisfies,
+} from './capability';
 export { type Clock, nowIso, SystemClock } from './clock';
 export type { EcdsaVerify, Ed25519Engine, Ed25519KeyPair } from './crypto/engine';
 export { computeRecordHash, GENESIS_HASH } from './hashing';
