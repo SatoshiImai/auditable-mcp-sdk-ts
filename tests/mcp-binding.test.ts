@@ -530,8 +530,10 @@ class SpyTransport implements McpTransport {
   async start(): Promise<void> {
     this.started = true;
   }
-  async send(message: JsonRpcFrame): Promise<void> {
+  readonly options: unknown[] = [];
+  async send(message: JsonRpcFrame, options?: unknown): Promise<void> {
     this.sent.push(message);
+    this.options.push(options);
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -581,5 +583,49 @@ describe('the seam is a faithful transport (§6.2)', () => {
     expect(seam.hasPerRequestStream).toBe(true);
     seam.setSupportedProtocolVersions(['2026-07-28']);
     expect(inner.supportedVersions).toEqual(['2026-07-28']);
+  });
+});
+
+describe('audit frames ride the tools/call they belong to (§4, §6)', () => {
+  /** Drive a seam over a spy transport, with one `tools/call` in flight. */
+  async function withCallInFlight(callId: string | number): Promise<SpyTransport> {
+    const inner = new SpyTransport();
+    const seam = new McpAuditTransport(inner, TOOL_CAPABILITY);
+    new SessionStub().attachTo(seam);
+    await seam.start();
+    inner.onmessage?.(initializeRequest(TOOL_CAPABILITY));
+    await settle();
+    seam.negotiate(TOOL_CAPABILITY);
+    inner.onmessage?.({ jsonrpc: '2.0', id: callId, method: 'tools/call', params: {} });
+    await settle();
+    await seam.sendOutcome({ call_id: String(callId), outcome: 'success' });
+    return inner;
+  }
+
+  it('names the request in flight, in the form the transport routes on', async () => {
+    const inner = await withCallInFlight(42);
+    // §4 carries a numeric id as its decimal string; the transport routes on the number it was.
+    expect(inner.options.at(-1)).toEqual({ relatedRequestId: 42 });
+  });
+
+  it('keeps a string id a string', async () => {
+    const inner = await withCallInFlight('call-abc');
+    expect(inner.options.at(-1)).toEqual({ relatedRequestId: 'call-abc' });
+  });
+
+  it('names nothing when the call is no longer in flight', async () => {
+    const inner = new SpyTransport();
+    const seam = new McpAuditTransport(inner, TOOL_CAPABILITY);
+    new SessionStub().attachTo(seam);
+    await seam.start();
+    inner.onmessage?.(initializeRequest(TOOL_CAPABILITY));
+    await settle();
+    seam.negotiate(TOOL_CAPABILITY);
+    inner.onmessage?.({ jsonrpc: '2.0', id: 42, method: 'tools/call', params: {} });
+    await settle();
+    // The session answers the call, so the request leaves flight.
+    await seam.send({ jsonrpc: '2.0', id: 42, result: { content: [] } });
+    await seam.sendOutcome({ call_id: '42', outcome: 'success' });
+    expect(inner.options.at(-1)).toBeUndefined();
   });
 });

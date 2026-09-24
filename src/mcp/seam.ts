@@ -21,6 +21,12 @@
  *   `unavailable`, which aborts the action rather than letting it run unrecorded (§7.2).
  * - Nothing is sent in an unnegotiated session (§6.2). `negotiate` is what opens the send path, so a
  *   transport that never negotiated, or negotiated and did not fit, refuses to send at all.
+ *
+ * The audit frames also ride the `tools/call` they belong to. §4 defines `call_id` as that call's
+ * JSON-RPC request id as a string, so the seam keeps the live inbound requests and hands the
+ * transport the original id as `relatedRequestId`. On stdio this changes nothing; on Streamable HTTP
+ * it is what puts a server-to-client request on the stream of the request in flight rather than on a
+ * standalone one the host may never have opened.
  */
 
 import type { NegotiationResult } from '../capability';
@@ -123,6 +129,8 @@ function isNotification(frame: JsonRpcFrame): boolean {
  */
 abstract class FrameSeam implements McpTransport {
   protected readonly inner: McpTransport;
+  /** The inbound requests still in flight, by the string form §4 gives their ids. */
+  readonly #live = new Map<string, string | number>();
   #sessionMessage: ((message: JsonRpcFrame, extra?: unknown) => void) | undefined;
   #sessionClose: (() => void) | undefined;
 
@@ -148,6 +156,7 @@ abstract class FrameSeam implements McpTransport {
 
   /** Everything the session writes passes through, with this side's declaration added to the handshake. */
   async send(message: JsonRpcFrame, options?: unknown): Promise<void> {
+    this.retire(message);
     await this.inner.send(this.declareOn(message), options);
   }
 
@@ -200,15 +209,35 @@ abstract class FrameSeam implements McpTransport {
   }
 
   /** Send one JSON-RPC message for this seam's own traffic. One message per frame, never an array (§6). */
-  protected async sendFrame(frame: JsonRpcFrame): Promise<void> {
-    await this.inner.send(frame);
+  protected async sendFrame(frame: JsonRpcFrame, relatedRequestId?: string | number): Promise<void> {
+    await this.inner.send(frame, relatedRequestId === undefined ? undefined : { relatedRequestId });
   }
 
   private async receive(message: JsonRpcFrame, extra?: unknown): Promise<void> {
+    if (isRequest(message)) {
+      this.#live.set(String(message.id), message.id);
+    }
     if (await this.intercept(message)) {
       return;
     }
     this.#sessionMessage?.(message, extra);
+  }
+
+  /**
+   * The id §4's `call_id` names, if that call is still in flight.
+   *
+   * The string form is what the event carries; the transport routes on the original, so a numeric id
+   * must come back as the number it was - `42` and `"42"` are different requests to a transport.
+   */
+  protected relatedRequestId(callId: unknown): string | number | undefined {
+    return typeof callId === 'string' ? this.#live.get(callId) : undefined;
+  }
+
+  /** A request leaves flight when its response goes out. */
+  protected retire(frame: JsonRpcFrame): void {
+    if (frame.id !== undefined && frame.method === undefined) {
+      this.#live.delete(String(frame.id));
+    }
   }
 
   /** Handle a frame this side owns; return true when the session must not see it. */
@@ -298,7 +327,10 @@ export class McpAuditTransport extends FrameSeam implements AuditTransport {
           resolve(unavailable());
         }, this.#requestTimeoutMs);
       });
-      await this.sendFrame({ jsonrpc: '2.0', id, method: ATTEMPT_METHOD, params: event });
+      await this.sendFrame(
+        { jsonrpc: '2.0', id, method: ATTEMPT_METHOD, params: event },
+        this.relatedRequestId(event.call_id),
+      );
       return await Promise.race([decided, bounded]);
     } catch (error) {
       // A connection that has gone away answers nothing, which is what `unavailable` says. Letting
@@ -318,7 +350,10 @@ export class McpAuditTransport extends FrameSeam implements AuditTransport {
   async sendOutcome(event: Record<string, unknown>): Promise<void> {
     this.requireNegotiated();
     try {
-      await this.sendFrame({ jsonrpc: '2.0', method: OUTCOME_METHOD, params: event });
+      await this.sendFrame(
+        { jsonrpc: '2.0', method: OUTCOME_METHOD, params: event },
+        this.relatedRequestId(event.call_id),
+      );
     } catch (error) {
       // An outcome has no response channel and no retry in §6; the host detects the gap by the
       // attempt it sealed and never saw resolved, which is what §7.5 is for.
