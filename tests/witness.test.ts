@@ -6,8 +6,8 @@ import { nobleEd25519Engine } from '../src/crypto/noble';
 import { computeRecordHash, witnessPayload } from '../src/hashing';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
-import { Ed25519WitnessSigner, generateToolKey, KeyRegistry, SignatureAlgorithm } from '../src/l2';
-import { WitnessRegistryVerifier } from '../src/l2/verification';
+import { Ed25519WitnessSigner, generateToolKey, KeyRegistry, KeyRole, SignatureAlgorithm } from '../src/l2';
+import { KeyRegistryVerifier, WitnessRegistryVerifier } from '../src/l2/verification';
 import type { SealedRecord } from '../src/ledger';
 import {
   type AcceptResponse,
@@ -39,7 +39,7 @@ function signingHost(): { host: AuditHost; publicKey: Uint8Array } {
 }
 
 function verifierFor(keyId: string, publicKey: Uint8Array): WitnessRegistryVerifier {
-  const registry = new KeyRegistry();
+  const registry = new KeyRegistry(KeyRole.HOST);
   registry.register(keyId, publicKey, SignatureAlgorithm.ED25519);
   return new WitnessRegistryVerifier(registry);
 }
@@ -438,5 +438,25 @@ describe('the stream-and-diffusion pass’s findings (§7.4, §11.3, §11.4)', (
     const report = verifyLedger([l2Record(0, 1, '0'.repeat(64))]);
     expect(report.ok).toBe(true);
     expect(report.unchecked).toEqual(['level-2-signature']);
+  });
+});
+
+describe('registry roles (§5.2, §10.9)', () => {
+  it('one registry cannot serve both roles', () => {
+    expect(() => new WitnessRegistryVerifier(new KeyRegistry(KeyRole.TOOL))).toThrow(/host-key registry/);
+    expect(() => new KeyRegistryVerifier(new KeyRegistry(KeyRole.HOST))).toThrow(/tool-key registry/);
+  });
+
+  it('a tool cannot sign itself into the host-witnessed state', () => {
+    const toolKey = generateToolKey('tool-k1');
+    const shared = new KeyRegistry(KeyRole.TOOL);
+    shared.registerToolKey(toolKey);
+    // The misuse the guard forbids: the witness verifier would resolve host_key_id "tool-k1".
+    expect(() => new WitnessRegistryVerifier(shared)).toThrow();
+    // A host-key registry the tool's key was never put into refuses it, as §5.2 requires.
+    const verifier = new WitnessRegistryVerifier(new KeyRegistry(KeyRole.HOST));
+    const payload = witnessPayload(0, '2026-07-15T00:00:02.000Z', '0'.repeat(64), 'a'.repeat(64));
+    const forged = Buffer.from(nobleEd25519Engine.sign(payload, toolKey.privateKey)).toString('base64');
+    expect(verifier.check('tool-k1', forged, payload)).toBe(false);
   });
 });

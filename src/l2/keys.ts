@@ -59,8 +59,29 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
  * Public keys are raw bytes for both schemes — a 32-byte Ed25519 key or an uncompressed EC point for
  * ECDSA — so one registry serves the unified verifier.
  */
+/**
+ * Whose keys a registry holds (§5.1 for a tool's, §7.1 for a host's).
+ *
+ * §10.9 requires the two registries to share no entry, and the only way an SDK can hold that is to
+ * make one registry serve one role. Without it a single registry serves both, a tool's own key
+ * resolves as a `host_key_id`, and the tool manufactures the host-witnessed state §5.2 says it cannot
+ * — defeating the axis rather than degrading it.
+ */
+export const KeyRole = {
+  TOOL: 'tool',
+  HOST: 'host',
+} as const;
+export type KeyRole = (typeof KeyRole)[keyof typeof KeyRole];
+
 export class KeyRegistry {
+  /** Whose keys this registry holds; the two roles never share an entry (§10.9). */
+  readonly role: KeyRole;
+
   #keys = new Map<string, RegisteredKey>();
+
+  constructor(role: KeyRole = KeyRole.TOOL) {
+    this.role = role;
+  }
 
   /**
    * Register a public key and its algorithm under `key_id`.

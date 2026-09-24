@@ -16,7 +16,7 @@ import * as fields from '../fields';
 import type { SignatureVerifier } from '../host';
 import type { RejectReason } from '../models';
 import * as reasons from '../reasons';
-import { type KeyRegistry, type RegisteredKey, SignatureAlgorithm } from './keys';
+import { type KeyRegistry, KeyRole, type RegisteredKey, SignatureAlgorithm } from './keys';
 import { signaturePayload } from './signing';
 
 function decodeSignature(event: Record<string, unknown>): Uint8Array | null {
@@ -82,7 +82,11 @@ export class KeyRegistryVerifier implements SignatureVerifier {
   readonly #ed25519Engine: Ed25519Engine;
   readonly #ecdsaVerify: EcdsaVerify;
 
+  /** @throws {Error} If `registry` holds host keys (§10.9). */
   constructor(registry: KeyRegistry, options: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify } = {}) {
+    if (registry.role !== KeyRole.TOOL) {
+      throw new Error('a Level-2 verifier needs a tool-key registry (§10.9)');
+    }
     this.#registry = registry;
     this.#ed25519Engine = options.ed25519Engine ?? nobleEd25519Engine;
     this.#ecdsaVerify = options.ecdsaVerify ?? nobleEcdsaVerify;
@@ -149,7 +153,15 @@ export class WitnessRegistryVerifier {
   readonly #registry: KeyRegistry;
   readonly #engines: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify };
 
+  /**
+   * @throws {Error} If `registry` holds tool keys. A tool that can be found in the registry a verifier
+   *   resolves `host_key_id` against can sign a witness payload with its own key and manufacture the
+   *   host-witnessed state §5.2 says it cannot (§10.9).
+   */
   constructor(registry: KeyRegistry, options: { ed25519Engine?: Ed25519Engine; ecdsaVerify?: EcdsaVerify } = {}) {
+    if (registry.role !== KeyRole.HOST) {
+      throw new Error('a witness verifier needs a host-key registry (§10.9)');
+    }
     this.#registry = registry;
     this.#engines = options;
   }

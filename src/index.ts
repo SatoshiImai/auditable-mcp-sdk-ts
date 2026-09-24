@@ -50,6 +50,7 @@ export {
   generateToolKey,
   KeyRegistry,
   KeyRegistryVerifier,
+  KeyRole,
   type ReconcileAnomaly,
   type RegisteredKey,
   reconcile,

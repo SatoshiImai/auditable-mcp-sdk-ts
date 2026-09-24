@@ -8,6 +8,7 @@
 export {
   generateToolKey,
   KeyRegistry,
+  KeyRole,
   type RegisteredKey,
   SignatureAlgorithm,
   type ToolKey,
