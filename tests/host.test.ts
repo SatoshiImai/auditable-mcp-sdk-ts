@@ -279,6 +279,8 @@ describe('the outcome channel’s remaining paths (§6, §10.8)', () => {
     const attempt = { ...signed(makeAttempt(eventIdAt(1)), 1), signature: 'forged' };
     expect((await host.handleAttempt(attempt)).status).toBe('reject');
     await host.handleOutcome(signed({ ...makeAttempt(eventIdAt(1)), outcome: 'success' }, 2));
-    expect(host.anomalies().some((a) => a.kind === 'orphaned-outcome')).toBe(true);
+    const orphan = host.anomalies().find((a) => a.kind === 'orphaned-outcome');
+    expect(orphan).toBeDefined();
+    expect(orphan?.detail).toContain('rejected id');
   });
 });

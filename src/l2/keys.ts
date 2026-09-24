@@ -12,6 +12,7 @@
  * a different key is forbidden — rotation uses a fresh `key_id`), and revocation is forward-only.
  */
 
+import { p256 } from '@noble/curves/nist';
 import type { Ed25519Engine } from '../crypto/engine';
 import { nobleEd25519Engine } from '../crypto/noble';
 
@@ -55,6 +56,27 @@ function keyLengthFits(publicKey: Uint8Array, algorithm: SignatureAlgorithm): bo
 export function generateToolKey(keyId: string, engine: Ed25519Engine = nobleEd25519Engine): ToolKey {
   const { publicKey, privateKey } = engine.generateKeyPair();
   return { keyId, publicKey, privateKey };
+}
+
+/**
+ * Whether two entries hold the same public key.
+ *
+ * Compared as keys, not as bytes: §5.1 admits both SEC1 forms of a P-256 point, so the compressed
+ * and uncompressed encodings of one key are one key, and re-registering it is the idempotent case
+ * §10.9 permits rather than the different-key case it forbids. The Python port compares the DER
+ * form for the same reason.
+ */
+function sameKey(a: Uint8Array, b: Uint8Array, algorithm: SignatureAlgorithm): boolean {
+  if (algorithm === SignatureAlgorithm.ED25519) {
+    return bytesEqual(a, b);
+  }
+  try {
+    return bytesEqual(p256.Point.fromBytes(a).toBytes(false), p256.Point.fromBytes(b).toBytes(false));
+  } catch {
+    // A point neither form parses is not a key this registry can hold; the §5.1 guard above refuses
+    // it at registration, so reaching here means the stored entry predates that guard.
+    return bytesEqual(a, b);
+  }
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -116,7 +138,10 @@ export class KeyRegistry {
       throw new Error(`a ${algorithm} entry does not bind a ${publicKey.length}-byte key (§5.1)`);
     }
     const existing = this.#keys.get(keyId);
-    if (existing !== undefined && (existing.algorithm !== algorithm || !bytesEqual(existing.publicKey, publicKey))) {
+    if (
+      existing !== undefined &&
+      (existing.algorithm !== algorithm || !sameKey(existing.publicKey, publicKey, algorithm))
+    ) {
       throw new Error(`key_id '${keyId}' is already registered with a different key (§10.9)`);
     }
     this.#keys.set(keyId, { algorithm, publicKey });

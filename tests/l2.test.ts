@@ -204,8 +204,7 @@ describe('a signature of the wrong shape (§5.1)', () => {
 });
 
 describe('registry re-registration (§10.9)', () => {
-  it('refuses a key_id already bound to a key of a different length', () => {
-    // bytesEqual short-circuits on length; a P-256 point replacing an Ed25519 key is the case.
+  it('refuses a key_id already bound to a different key', () => {
     const registry = new KeyRegistry();
     registry.registerToolKey(generateToolKey('k1'));
     expect(() =>
@@ -214,5 +213,31 @@ describe('registry re-registration (§10.9)', () => {
     expect(() => registry.register('k1', generateToolKey('other').publicKey, SignatureAlgorithm.ED25519)).toThrow(
       '§10.9',
     );
+  });
+
+  it('re-registering the same key read again is idempotent', () => {
+    // §10.9 forbids binding a key_id to a different key, not to the same one held twice: a registry
+    // reloaded from disk holds new bytes for the same key.
+    const registry = new KeyRegistry();
+    const key = generateToolKey('k1');
+    registry.registerToolKey(key);
+    registry.register('k1', Uint8Array.from(key.publicKey), SignatureAlgorithm.ED25519);
+    expect(registry.get('k1')).toBeDefined();
+  });
+
+  it('the same P-256 point in two encodings is the same key', () => {
+    // §5.1 admits both SEC1 forms, so the compressed and uncompressed point are one key (§10.9).
+    const registry = new KeyRegistry(KeyRole.HOST);
+    const secret = p256.utils.randomSecretKey();
+    registry.register('h1', p256.getPublicKey(secret, false), SignatureAlgorithm.ECDSA_P256_SHA256);
+    registry.register('h1', p256.getPublicKey(secret, true), SignatureAlgorithm.ECDSA_P256_SHA256);
+    expect(registry.get('h1')).toBeDefined();
+    expect(() =>
+      registry.register(
+        'h1',
+        p256.getPublicKey(p256.utils.randomSecretKey(), false),
+        SignatureAlgorithm.ECDSA_P256_SHA256,
+      ),
+    ).toThrow('§10.9');
   });
 });

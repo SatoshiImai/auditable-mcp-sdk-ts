@@ -42,6 +42,9 @@ stay symmetric by design.
 - **Every abort path emits best-effort.** Only the transport-fault path did; on the other four a
   failure while recording the abort replaced the abort, so the caller saw the second failure instead
   of why the tool stopped (§7.2).
+- **A registry compares keys, not encodings.** §5.1 admits both SEC1 forms of a P-256 point, so the
+  compressed and uncompressed encodings of one key were being refused as two keys. Re-registering
+  the same key is the idempotent case §10.9 permits.
 - **`AmcpUsageError`** separates an integrator error from a transport fault. The session's
   fail-closed catch was converting the MCP binding's own refusals - an unnegotiated send, a
   handshake not seen - into `host-unavailable`, filing an `aborted` record that blamed the host for
