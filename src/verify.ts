@@ -188,7 +188,15 @@ export function verifyChain(
     // §11.4 names the Level-2 re-verification it did not perform as well: this verifier checks the
     // chain, not the event signatures (§10.6 makes that optional), and an unchecked signature must not
     // read as a verified one.
-    if (event[fields.SIGNATURE] !== undefined) {
+    // Read through the adapter: a record sealed inside an envelope (e.g. SEP-3004) keeps the a-MCP
+    // event, and its signature, inside it, so a top-level lookup would miss exactly the deployment
+    // §10.10 recommends and report a complete verification of signatures nobody checked.
+    const inner = adapter.eventOf(event);
+    if (
+      inner !== null &&
+      typeof inner === 'object' &&
+      (inner as Record<string, unknown>)[fields.SIGNATURE] !== undefined
+    ) {
       l2Unchecked = true;
     }
 

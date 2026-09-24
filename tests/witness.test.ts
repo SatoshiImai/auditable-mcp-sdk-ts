@@ -20,7 +20,7 @@ import {
   Witness,
 } from '../src/models';
 import { AmcpAbortedError, AmcpSession } from '../src/session';
-import { verifyLedger } from '../src/verify';
+import { type RecordAdapter, verifyLedger } from '../src/verify';
 import { FixedDeps, MonotonicClock, makeAttempt } from './helpers';
 
 const HOST_KEY_ID = 'host-key-2026';
@@ -325,5 +325,59 @@ describe('the implementation review’s findings (§5.1, §7.1, §11.4)', () => 
     for (const malformed of ['Zm Fr ZQ==', 'ZmFrZQ', 'a-_b', 'ZmFr!ZQ==']) {
       expect(() => base64ToBytes(malformed), malformed).toThrow();
     }
+  });
+});
+
+describe('the overview review’s findings (§10.10, §11.4)', () => {
+  function enveloped(inner: Record<string, unknown>): { record: SealedRecord; adapter: RecordAdapter } {
+    const envelope = { principal_id: 'tenant-a', extensions: { 'auditable-mcp': inner } };
+    const recordHash = computeRecordHash(envelope, 0, '2026-07-15T00:00:02.000Z', '0'.repeat(64));
+    const reach = (event: Record<string, unknown>): Record<string, unknown> =>
+      (event.extensions as Record<string, Record<string, unknown>>)['auditable-mcp'] as Record<string, unknown>;
+    return {
+      record: {
+        event: envelope,
+        seq: 0,
+        host_ts: '2026-07-15T00:00:02.000Z',
+        previous_hash: '0'.repeat(64),
+        record_hash: recordHash,
+      },
+      adapter: {
+        idOf: (event) => reach(event).id,
+        isAttempt: (event) => reach(event).outcome === 'attempted',
+        eventOf: reach,
+        principalOf: (event) => event.principal_id,
+      },
+    };
+  }
+
+  it('names an enveloped Level-2 signature as unchecked too (§11.4)', () => {
+    const inner = makeAttempt('00000000-0000-4000-8000-000000000001', {
+      key_id: 'k1',
+      signer_seq: 1,
+      signature: 'ZmFrZQ==',
+    });
+    const { record, adapter } = enveloped(inner);
+    const report = verifyLedger([record], undefined, adapter, 'tenant-a');
+    expect(report.ok).toBe(true);
+    expect(report.unchecked).toEqual(['level-2-signature']);
+    expect(report.complete).toBe(false);
+  });
+
+  it('keeps `unchecked` when the schema branch also fires (§11.4)', () => {
+    const badEvent = { not: 'an audit event' };
+    const record: SealedRecord = {
+      event: badEvent,
+      seq: 0,
+      host_ts: '2026-07-15T00:00:02.000Z',
+      previous_hash: '0'.repeat(64),
+      record_hash: computeRecordHash(badEvent, 0, '2026-07-15T00:00:02.000Z', '0'.repeat(64)),
+      host_signature: 'ZmFrZQ==',
+      host_key_id: HOST_KEY_ID,
+    };
+    const report = verifyLedger([record]);
+    expect(report.ok).toBe(false);
+    expect(report.issues.some((issue) => issue.kind === 'schema-invalid')).toBe(true);
+    expect(report.unchecked).toEqual(['witness']);
   });
 });
