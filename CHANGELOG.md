@@ -1,7 +1,41 @@
 # Changelog
 
 Changes to the Auditable MCP TypeScript SDK. The SDK package version is independent of the
-`spec_version` it implements (currently `auditable-mcp/0.2`); this file tracks the package.
+`spec_version` it implements (currently `auditable-mcp/0.3`); this file tracks the package.
+
+## 0.3.0
+
+Breaking, tracking spec `auditable-mcp/0.3`. The Python SDK's 0.3.0 is the same change; the two ports
+stay symmetric by design.
+
+### Breaking changes
+
+- **Emission moves to `auditable-mcp/0.3`**, so every golden digest changes; the verifier stays
+  read-lenient and still accepts records sealed under any published version.
+- **`AuditCapability` gains a REQUIRED `witness`** of `none` or `host` (§5.2, §6.1).
+- **`negotiate(host, tool)` replaces the single-axis fit.** `capabilitySatisfies` splits into
+  `levelSatisfies` and `witnessSatisfies` because the axes run in opposite directions, `host` may be
+  `undefined` for a peer that declared nothing, and the result carries a `NegotiationOutcome` rather
+  than a boolean `satisfied`: an absent negotiation is not a failed one, and §6.2 governs it
+  differently.
+- **`VerifyReport` gains `unchecked` and `complete`** (§11.4), so a caller that only reads `ok`
+  cannot mistake an unchecked signature for a verified one.
+
+### Added
+
+- **The witness axis.** `AuditHost` takes a `witnessSigner` (`Ed25519WitnessSigner`) and signs every
+  sealed record, attempts and outcomes alike; an outcome's signature is written into the ledger,
+  since `audit/outcome` has no response channel. `AmcpSession` takes a `witnessVerifier`
+  (`WitnessRegistryVerifier`) and enforces §7.2's precedence. `SealedRecord` carries
+  `host_signature` / `host_key_id`, absent when unwitnessed.
+- **`transportFor`** picks what §6.2 permits for a session that was not negotiated, and refuses to
+  return a transport for the third, non-conformant posture.
+- `HOST_UNWITNESSED` / `HOST_SIGNATURE_INVALID`; `witnessPayload`; `verifyDetachedSignature`.
+
+### Fixed
+
+- `verifyDetachedSignature` called the Ed25519 engine as `verify(signature, payload, key)` where the
+  interface is `verify(message, signature, key)`. Caught by the first test written against it.
 
 ## 0.2.1
 

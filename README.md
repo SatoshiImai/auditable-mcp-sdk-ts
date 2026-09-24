@@ -1,7 +1,7 @@
 # Auditable MCP SDK (TypeScript)
 
 A protocol machine for [Auditable MCP](https://github.com/SatoshiImai/mcp-audit-extension)
-(`auditable-mcp/0.2`). It lets an MCP tool self-attest its internal domain operations (SQL queries,
+(`auditable-mcp/0.3`). It lets an MCP tool self-attest its internal domain operations (SQL queries,
 downstream API calls) and lets a host seal those attestations into a tamper-evident, hash-chained
 ledger.
 
@@ -34,7 +34,7 @@ What it does not do (your concern, via adapters):
 
 ## Status
 
-Alpha, tracking `auditable-mcp/0.2`. The public API is unstable while the spec is a pre-1.0 draft.
+Alpha, tracking `auditable-mcp/0.3`. The public API is unstable while the spec is a pre-1.0 draft.
 
 ## Install
 
@@ -69,6 +69,14 @@ edge runtimes). Entry points:
   same process; a real deployment substitutes a wire transport.
 - Levels: Level 1 is self-reporting; Level 2 adds a detached signature and a monotonic sequence. The
   only difference on the tool side is an injected signer, and on the host side an injected verifier.
+- Witness: an independent axis (§5.2). The level says how strongly a tool's attestation resists
+  forgery; the witness says who sealed it. A host that declares `witness: "host"` signs the
+  host-assigned fields of every record it seals, so a verifier can tell a chain a distinct host
+  confirmed from one a tool recorded for itself. Absence of a signature is a state, not an anomaly.
+- Degradation: a tool that speaks this extension stays usable by hosts that do not. Where the
+  extension was not negotiated, `transportFor` gives back either an audit host the tool provides for
+  itself (degraded) or refuses to serve (mandatory) — and refuses to return anything at all for the
+  third, non-conformant posture of serving while recording nothing (§6.2).
 
 ## Quickstart
 
