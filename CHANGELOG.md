@@ -30,6 +30,14 @@ stay symmetric by design.
   `host_signature` / `host_key_id`, absent when unwitnessed.
 - **`transportFor`** picks what §6.2 permits for a session that was not negotiated, and refuses to
   return a transport for the third, non-conformant posture.
+- **The MCP wire binding** (`auditable-mcp-sdk/mcp`). `McpAuditTransport` (tool) and
+  `McpAuditReceiver` (host) carry `audit/attempt` and `audit/outcome` on a real MCP connection by
+  wrapping the transport the session is given; neither official SDK dispatches a method outside its
+  own request union, and neither has to. The seams also declare this extension on `initialize` and
+  read the peer's declaration back. Three §6 obligations are enforced only here: an attempt is never
+  batched, the wait for a decision is bounded and fails closed, and an unnegotiated session carries
+  no audit message at all. The entry point declares the MCP transport surface structurally, so it
+  adds no dependency.
 - `HOST_UNWITNESSED` / `HOST_SIGNATURE_INVALID`; `witnessPayload`; `verifyDetachedSignature`.
 
 ### Fixed

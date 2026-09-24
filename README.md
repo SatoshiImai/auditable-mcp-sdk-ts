@@ -28,8 +28,9 @@ What it does not do (your concern, via adapters):
 
 - No storage backend. The SDK defines the `LedgerRepository` interface (with an in-memory
   implementation for tests); you implement it over your store. A `SealedRecord` is plain JSON.
-- No transport lock-in. The core defines an abstract transport and bundles the in-process one; you
-  wire the `AuditTransport` seam over MCP, importing the official MCP package alongside this one.
+- No transport lock-in. The core defines an abstract transport and bundles the in-process one. The
+  MCP wire binding is a separate entry point (`auditable-mcp-sdk/mcp`) that declares the transport
+  surface structurally, so importing it pulls in no MCP package either.
 - No tool business logic, and no in-process private keys in production — sign through a KMS/HSM.
 
 ## Status
@@ -48,6 +49,7 @@ edge runtimes). Entry points:
 | Import                          | Contents                                                        |
 | ------------------------------- | --------------------------------------------------------------- |
 | `auditable-mcp-sdk`             | The runtime-agnostic core (session, host, L2, verify, storage)  |
+| `auditable-mcp-sdk/mcp`         | The §6 wire binding: `audit/*` on a real MCP connection          |
 | `auditable-mcp-sdk/node`        | Node adapters: ambient session (`AsyncLocalStorage`), `node:crypto` engine |
 | `auditable-mcp-sdk/noble`       | The universal default crypto engine (explicit access)           |
 | `auditable-mcp-sdk/aws-kms`     | The AWS KMS signer/verifier adapter                             |
@@ -66,7 +68,7 @@ edge runtimes). Entry points:
   hash-chained ledger — in memory, or durably through an injected `LedgerRepository`. It never
   authorizes the domain action; it only protects ledger integrity.
 - Transport: the two sides talk over an `AuditTransport`. `InProcessTransport` connects them in the
-  same process; a real deployment substitutes a wire transport.
+  same process; `auditable-mcp-sdk/mcp` carries the same seam over a real MCP connection.
 - Levels: Level 1 is self-reporting; Level 2 adds a detached signature and a monotonic sequence. The
   only difference on the tool side is an injected signer, and on the host side an injected verifier.
 - Witness: an independent axis (§5.2). The level says how strongly a tool's attestation resists
@@ -236,6 +238,47 @@ if (!report.ok) {
   }
 }
 ```
+
+### 8. Over a real MCP connection
+
+Neither official MCP SDK dispatches a method outside its own fixed request union, so neither can
+deliver `audit/attempt` or `audit/outcome` to a handler. They do not have to: the audit wire is
+ordinary JSON-RPC on the connection MCP already holds, and a `Transport` is something you hand to the
+session. The binding wraps the real transport and gives the session a seam instead. Everything that
+is not an audit frame passes through untouched, so the session sees exactly the MCP it would have
+seen without this extension.
+
+A tool (an MCP server):
+
+```ts
+import { McpAuditTransport } from 'auditable-mcp-sdk/mcp';
+import { transportFor } from 'auditable-mcp-sdk';
+
+const TOOL_CAPABILITY = { spec_version: SPEC_VERSION, level: Level.L1, attempt: 'request', witness: Witness.NONE };
+
+// the seam declares the extension in the `initialize` result and reads the host's back
+const audit = new McpAuditTransport(new StdioServerTransport(), TOOL_CAPABILITY);
+await server.connect(audit);
+
+// inside the tool handler: pick the transport §6.2 permits for this session, then run the action
+const transport = transportFor(audit.negotiate(TOOL_CAPABILITY), { negotiated: audit, fallback: selfHosted });
+await withAudit(new AmcpSession(transport, callId), spec, handler);
+```
+
+A host (an MCP client) wraps its own transport around its `AuditHost`, and its declaration is the
+host's requirement itself — there is no second copy to drift:
+
+```ts
+import { capabilityOf, McpAuditReceiver } from 'auditable-mcp-sdk/mcp';
+
+const audit = new McpAuditReceiver(new StdioClientTransport(params), host);
+await client.connect(audit);
+const toolCapability = capabilityOf(client.getServerCapabilities());   // undefined = an ordinary MCP tool
+```
+
+Three §6 obligations live in this entry point and nowhere else: an attempt is never batched, the wait
+for a decision is bounded and fails closed when it expires, and nothing at all is sent in a session
+that was not audit-negotiated.
 
 ## Conformance
 

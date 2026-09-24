@@ -8,3 +8,6 @@ coverage/
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+
+# Work-in-progress notes — local only, as in the Python SDK and the spec repo.
+wip/
