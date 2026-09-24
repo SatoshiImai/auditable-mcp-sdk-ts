@@ -7,12 +7,17 @@
 import type { Clock } from '../src/clock';
 import type { SignatureVerifier } from '../src/host';
 import type { SealedRecord } from '../src/ledger';
-import { type AuditCapability, Level, type RejectReason, SPEC_VERSION } from '../src/models';
+import { type AuditCapability, Level, type RejectReason, SPEC_VERSION, Witness } from '../src/models';
 import type { Deps, EventSigner } from '../src/session';
 import { type LedgerRepository, RepositoryError } from '../src/storage/repository';
 
 /** An L2 host/tool capability at the current spec version. */
-export const L2_CAPABILITY: AuditCapability = { spec_version: SPEC_VERSION, level: Level.L2, attempt: 'request' };
+export const L2_CAPABILITY: AuditCapability = {
+  spec_version: SPEC_VERSION,
+  level: Level.L2,
+  attempt: 'request',
+  witness: Witness.NONE,
+};
 
 /** A monotonic host clock producing valid ISO-8601 timestamps. */
 export class MonotonicClock implements Clock {

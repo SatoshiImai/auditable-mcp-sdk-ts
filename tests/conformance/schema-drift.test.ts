@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
-import { auditCapabilitySchema, firstValidationError } from '../../src/models';
+import { auditCapabilitySchema, firstValidationError, SPEC_VERSION } from '../../src/models';
 
 const SCHEMA_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -34,7 +34,7 @@ const validateSchema = new Ajv2020({ strict: false }).compile(eventSchema);
 
 const validBase: Record<string, unknown> = {
   id: '00000000-0000-4000-8000-000000000001',
-  spec_version: 'auditable-mcp/0.2',
+  spec_version: SPEC_VERSION,
   ts: '2026-07-15T00:00:01.000Z',
   call_id: 'call_abc',
   action_type: 'db.read',
@@ -110,16 +110,24 @@ const CAPABILITY_SCHEMA_PATH = join(
 const capabilitySchema = JSON.parse(readFileSync(CAPABILITY_SCHEMA_PATH, 'utf-8'));
 const validateCapabilitySchema = new Ajv2020({ strict: false }).compile(capabilitySchema);
 
-const capValid: Record<string, unknown> = { spec_version: 'auditable-mcp/0.2', level: 'L1', attempt: 'request' };
+const capValid: Record<string, unknown> = {
+  spec_version: SPEC_VERSION,
+  level: 'L1',
+  attempt: 'request',
+  witness: 'none',
+};
 
-// All three fields REQUIRED (§6.1): a missing one is rejected, not defaulted, so a peer cannot bypass
-// version negotiation by omission.
+// All four fields REQUIRED (§6.1): a missing one is rejected, not defaulted, so a peer cannot bypass
+// version or witness negotiation by omission.
 const capSamples: [string, Record<string, unknown>, boolean][] = [
   ['cap-valid', capValid, true],
   ['cap-l2', { ...capValid, level: 'L2' }, true],
-  ['cap-missing-spec-version', { level: 'L1', attempt: 'request' }, false],
-  ['cap-missing-level', { spec_version: capValid.spec_version, attempt: 'request' }, false],
-  ['cap-missing-attempt', { spec_version: capValid.spec_version, level: 'L1' }, false],
+  ['cap-missing-spec-version', { level: 'L1', attempt: 'request', witness: 'none' }, false],
+  ['cap-missing-level', { spec_version: capValid.spec_version, attempt: 'request', witness: 'none' }, false],
+  ['cap-missing-attempt', { spec_version: capValid.spec_version, level: 'L1', witness: 'none' }, false],
+  ['cap-witness-host', { ...capValid, witness: 'host' }, true],
+  ['cap-missing-witness', { spec_version: capValid.spec_version, level: 'L1', attempt: 'request' }, false],
+  ['cap-bad-witness', { ...capValid, witness: 'self' }, false],
   ['cap-bad-level', { ...capValid, level: 'L3' }, false],
   ['cap-bad-attempt', { ...capValid, attempt: 'response' }, false],
   ['cap-extra-property', { ...capValid, surprise: 'boom' }, false],

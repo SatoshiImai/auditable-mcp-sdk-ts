@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { MAX_SAFE_INTEGER } from './canonical';
 
 // The only spec version defined by this contract; a mismatch is a hard validation error.
-export const SPEC_VERSION = 'auditable-mcp/0.2' as const;
+export const SPEC_VERSION = 'auditable-mcp/0.3' as const;
 
 // Patterns copied verbatim from the normative JSON Schema (spec/schema/).
 export const UUID_PATTERN =
@@ -54,6 +54,18 @@ export const Level = {
 } as const;
 export type Level = (typeof Level)[keyof typeof Level];
 
+/**
+ * What a participant declares on the witness axis (§5.2, §6.1).
+ *
+ * Unlike `Level`, the obligation on this axis falls on the host: `HOST` means records in this session
+ * carry a witness signature - a host declaring it will sign, a tool declaring it requires one.
+ */
+export const Witness = {
+  NONE: 'none',
+  HOST: 'host',
+} as const;
+export type Witness = (typeof Witness)[keyof typeof Witness];
+
 /** The attempt-response discriminator (§7.1). */
 export const Status = {
   ACCEPT: 'accept',
@@ -63,7 +75,13 @@ export const Status = {
 export type Status = (typeof Status)[keyof typeof Status];
 
 // The §7.6 Tier-1 code enums pinned onto the wire contracts.
-const abortReasonSchema = z.enum(['hash-mismatch', 'host-rejected', 'host-unavailable']);
+const abortReasonSchema = z.enum([
+  'hash-mismatch',
+  'host-rejected',
+  'host-unavailable',
+  'host-unwitnessed',
+  'host-signature-invalid',
+]);
 const rejectReasonSchema = z.enum([
   'schema-invalid',
   'replay-detected',
@@ -122,7 +140,12 @@ export type AuditEvent = z.infer<typeof auditEventSchema>;
 // pinned to the current SPEC_VERSION (auditEventSchema, §6.1); a verifier reading a stored ledger must
 // accept records sealed under an earlier published version, since their bytes and hash chain are
 // immutable evidence.
-export const KNOWN_SPEC_VERSIONS = ['auditable-mcp/0.1', 'auditable-mcp/0.1.1', 'auditable-mcp/0.2'] as const;
+export const KNOWN_SPEC_VERSIONS = [
+  'auditable-mcp/0.1',
+  'auditable-mcp/0.1.1',
+  'auditable-mcp/0.2',
+  'auditable-mcp/0.3',
+] as const;
 
 // Read-lenient verification view of a sealed event: accepts any published `spec_version`.
 export const sealedAuditEventSchema = z
@@ -134,23 +157,34 @@ export const sealedAuditEventSchema = z
 
 /** An audit capability exchanged during negotiation: the version, level, and attempt mode (§6.1). */
 export const auditCapabilitySchema = z.strictObject({
-  // All three REQUIRED (§6.1, normative audit-capability.schema.json): a peer that omits any field is
-  // rejected, not silently coerced, so version negotiation cannot be bypassed by omission. The host
-  // completes its own partial self-declaration with explicit SDK defaults before parsing (host.ts).
+  // All four REQUIRED (§6.1, normative audit-capability.schema.json): a peer that omits any field is
+  // rejected, not silently coerced, so version or witness negotiation cannot be bypassed by omission.
+  // The host completes its own partial self-declaration with explicit SDK defaults before parsing.
   spec_version: z.string().min(1),
   level: z.enum(Level),
   attempt: z.literal('request'),
+  witness: z.enum(Witness),
 });
 export type AuditCapability = z.infer<typeof auditCapabilitySchema>;
 
 /** A sealed attempt: carries the host-assigned fields the tool needs for Polluted Stop (§7.1, §7.2). */
-export const acceptResponseSchema = z.strictObject({
-  status: z.literal(Status.ACCEPT),
-  seq: z.int().min(0).max(MAX_SAFE_INTEGER),
-  record_hash: z.string().regex(chainHashRegex),
-  host_ts: z.string().regex(datetimeRegex),
-  previous_hash: z.string().regex(chainHashRegex),
-});
+export const acceptResponseSchema = z
+  .strictObject({
+    status: z.literal(Status.ACCEPT),
+    seq: z.int().min(0).max(MAX_SAFE_INTEGER),
+    record_hash: z.string().regex(chainHashRegex),
+    host_ts: z.string().regex(datetimeRegex),
+    previous_hash: z.string().regex(chainHashRegex),
+    // The witness signature (§7.1): present exactly when the host declares `witness: "host"`. The two
+    // fields appear together or not at all - a signature no key names is unverifiable, and a key naming
+    // no signature establishes nothing.
+    host_signature: z.string().regex(signatureRegex).optional(),
+    host_key_id: z.string().min(1).optional(),
+  })
+  .refine((response) => (response.host_signature === undefined) === (response.host_key_id === undefined), {
+    message: 'host_signature and host_key_id must appear together or not at all',
+    path: ['host_key_id'],
+  });
 export type AcceptResponse = z.infer<typeof acceptResponseSchema>;
 
 /** A refused attempt: ledger integrity could not be guaranteed (§7.1). `reason` is a Tier-1 code. */

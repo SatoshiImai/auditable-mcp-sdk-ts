@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SealedRecord } from '../src/ledger';
 import { Ledger } from '../src/ledger';
-import { firstSealedValidationError, firstValidationError } from '../src/models';
+import { firstSealedValidationError, firstValidationError, SPEC_VERSION } from '../src/models';
 import {
   DEFAULT_ADAPTER,
   DIGEST_MISMATCH,
@@ -27,7 +27,7 @@ function amcpEvent(
 ): Record<string, unknown> {
   return {
     id,
-    spec_version: 'auditable-mcp/0.2',
+    spec_version: SPEC_VERSION,
     ts: '2026-07-15T00:00:01.000Z',
     call_id: 'call_abc',
     action_type: 'db.read',

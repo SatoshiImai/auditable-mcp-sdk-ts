@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { capabilitySatisfies, negotiate } from '../src/capability';
 import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
-import { type AuditCapability, Level, SPEC_VERSION } from '../src/models';
+import { type AuditCapability, Level, SPEC_VERSION, Witness } from '../src/models';
 import { accept, reject, unavailable } from '../src/transport';
 import { makeAttempt } from './helpers';
 
-const L1: AuditCapability = { spec_version: SPEC_VERSION, level: Level.L1, attempt: 'request' };
-const L2: AuditCapability = { spec_version: SPEC_VERSION, level: Level.L2, attempt: 'request' };
+const L1: AuditCapability = { spec_version: SPEC_VERSION, level: Level.L1, attempt: 'request', witness: Witness.NONE };
+const L2: AuditCapability = { spec_version: SPEC_VERSION, level: Level.L2, attempt: 'request', witness: Witness.NONE };
 
 describe('capability negotiation (§6.1)', () => {
   it('an L2 offer satisfies an L1 requirement (safe downgrade)', () => {
@@ -20,7 +20,12 @@ describe('capability negotiation (§6.1)', () => {
   });
 
   it('flags a spec_version mismatch and withholds satisfaction', () => {
-    const older: AuditCapability = { spec_version: 'auditable-mcp/0.1', level: Level.L1, attempt: 'request' };
+    const older: AuditCapability = {
+      spec_version: 'auditable-mcp/0.1',
+      level: Level.L1,
+      attempt: 'request',
+      witness: Witness.NONE,
+    };
     const result = negotiate(L1, older);
     expect(result.versionMatch).toBe(false);
     expect(result.satisfied).toBe(false);

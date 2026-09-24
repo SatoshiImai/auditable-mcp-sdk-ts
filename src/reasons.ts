@@ -21,15 +21,18 @@ export const INTERNAL_ERROR = 'internal-error';
 export const HASH_MISMATCH = 'hash-mismatch';
 export const HOST_REJECTED = 'host-rejected';
 export const HOST_UNAVAILABLE = 'host-unavailable';
+export const HOST_UNWITNESSED = 'host-unwitnessed';
+// Reused below as an anomaly kind: a tool aborts on it at runtime, a verifier reports it from a ledger.
+export const HOST_SIGNATURE_INVALID = 'host-signature-invalid';
 
 // Ledger anomaly kinds a verifier reports (§7.6). SCHEMA_INVALID / SIGNATURE_INVALID above are reused
 // here (a distinct code space, disambiguated by the anomaly `kind` field).
 export const RECORD_HASH_MISMATCH = 'record-hash-mismatch';
 export const DIGEST_MISMATCH = 'digest-mismatch';
-// SDK-specific: defined by neither a-MCP §7.6 nor SEP-3004. SEP-3004 binds `principal_id` in its
-// hashed core and detects tampering of it (§2.6 event_hash recompute), but never compares that identity
-// against the principal a partition is expected to hold; a-MCP delegates identity to the envelope
-// entirely. This kind flags that comparison - the detection half neither spec defines.
+// a-MCP §10.10 requires a deployment with several principals in one store to bind identity and the
+// verifier to check it; SEP-3004 binds `principal_id` in its hashed core and detects tampering of it
+// (§2.6 event_hash recompute) but never compares that identity against the principal a partition is
+// expected to hold. This kind flags that comparison - the detection half SEP-3004 does not define.
 export const PRINCIPAL_MISMATCH = 'principal-mismatch';
 export const SEQ_GAP = 'seq-gap';
 export const SIGNER_SEQ_GAP = 'signer-seq-gap';
@@ -48,6 +51,8 @@ export type Tier1Code =
   | typeof HASH_MISMATCH
   | typeof HOST_REJECTED
   | typeof HOST_UNAVAILABLE
+  | typeof HOST_UNWITNESSED
+  | typeof HOST_SIGNATURE_INVALID
   | typeof RECORD_HASH_MISMATCH
   | typeof DIGEST_MISMATCH
   | typeof PRINCIPAL_MISMATCH

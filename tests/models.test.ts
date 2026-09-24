@@ -8,6 +8,7 @@ import {
   Outcome,
   SPEC_VERSION,
   Status,
+  Witness,
 } from '../src/models';
 import { eventVectors } from './vectors';
 
@@ -65,17 +66,27 @@ describe('auditEventSchema pins reason to the abort codes and requires it for ab
 
 describe('auditCapabilitySchema requires all three fields with no defaulting (§6.1)', () => {
   it('rejects a capability that omits spec_version', () => {
-    expect(auditCapabilitySchema.safeParse({ level: Level.L2, attempt: 'request' }).success).toBe(false);
+    expect(
+      auditCapabilitySchema.safeParse({ level: Level.L2, attempt: 'request', witness: Witness.NONE }).success,
+    ).toBe(false);
   });
 
   it('rejects a capability that omits level or attempt (no silent coercion)', () => {
-    expect(auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION, attempt: 'request' }).success).toBe(false);
+    expect(
+      auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION, attempt: 'request', witness: Witness.NONE })
+        .success,
+    ).toBe(false);
     expect(auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION, level: Level.L1 }).success).toBe(false);
     expect(auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION }).success).toBe(false);
   });
 
   it('accepts a fully specified capability', () => {
-    const parsed = auditCapabilitySchema.parse({ spec_version: SPEC_VERSION, level: Level.L2, attempt: 'request' });
+    const parsed = auditCapabilitySchema.parse({
+      spec_version: SPEC_VERSION,
+      level: Level.L2,
+      attempt: 'request',
+      witness: Witness.NONE,
+    });
     expect(parsed.level).toBe(Level.L2);
     expect(parsed.attempt).toBe('request');
   });
@@ -116,6 +127,6 @@ describe('Outcome / Level / Status values equal the wire strings', () => {
     expect(Outcome.ATTEMPTED).toBe('attempted');
     expect(Level.L2).toBe('L2');
     expect(Status.ACCEPT).toBe('accept');
-    expect(SPEC_VERSION).toBe('auditable-mcp/0.2');
+    expect(SPEC_VERSION).toBe('auditable-mcp/0.3');
   });
 });

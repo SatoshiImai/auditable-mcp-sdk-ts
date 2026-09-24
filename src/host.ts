@@ -26,6 +26,7 @@ import {
   Outcome,
   type RejectReason,
   SPEC_VERSION,
+  Witness,
 } from './models';
 import * as reasons from './reasons';
 import { type LedgerRepository, RepositoryError } from './storage/repository';
@@ -98,6 +99,7 @@ export class AuditHost implements AuditEndpoint {
       spec_version: SPEC_VERSION,
       level: Level.L1,
       attempt: 'request',
+      witness: Witness.NONE,
       ...capability,
     });
     if (resolved.level === Level.L2 && options.verifier === undefined) {
