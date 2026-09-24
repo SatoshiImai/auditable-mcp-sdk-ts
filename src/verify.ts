@@ -133,6 +133,17 @@ export function verifyChain(
   witnessChecker?: WitnessChecker,
   signatureChecker?: SignatureChecker,
 ): VerifyReport {
+  // §11.4 compares the expectation and the bound identity as values. A structured expectation would
+  // be compared by identity here and by value in the Python port, so two conforming verifiers would
+  // return opposite verdicts on one ledger; §10.10 binds a single primitive, so it is refused.
+  if (
+    expectedPrincipal !== undefined &&
+    (typeof expectedPrincipal === 'object' || typeof expectedPrincipal === 'function')
+  ) {
+    throw new Error(
+      'the expected principal is compared as a value; reduce a structured identity to a primitive (§10.10, §11.4)',
+    );
+  }
   const issues: VerifyIssue[] = [];
   const attemptedIds = new Set<unknown>();
   let prevRecomputed = GENESIS_HASH;

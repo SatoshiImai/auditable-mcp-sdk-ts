@@ -6,6 +6,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'mcp/index': 'src/mcp/index.ts',
+    reasons: 'src/reasons.ts',
     'node/index': 'src/node/index.ts',
     'crypto/noble': 'src/crypto/noble.ts',
     'l2/adapters/aws-kms': 'src/l2/adapters/aws-kms.ts',

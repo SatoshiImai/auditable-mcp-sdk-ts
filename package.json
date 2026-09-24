@@ -29,6 +29,10 @@
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js"
     },
+    "./reasons": {
+      "types": "./dist/reasons.d.ts",
+      "import": "./dist/reasons.js"
+    },
     "./node": {
       "types": "./dist/node/index.d.ts",
       "import": "./dist/node/index.js"

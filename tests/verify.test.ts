@@ -285,3 +285,15 @@ describe('verifyChain audits a non-A-MCP envelope schema-free', () => {
     expect(verifyChain(records).issues.some((i) => i.kind === SEQ_GAP)).toBe(true);
   });
 });
+
+describe('the principal is compared as a value (§11.4)', () => {
+  it('refuses a structured expectation', () => {
+    // §10.10 binds a single primitive; a structure compares by identity here and by value in Python,
+    // so two conforming verifiers would return opposite verdicts on one ledger.
+    expect(() => verifyChain([], undefined, undefined, { tenant: 'a' })).toThrow('primitive');
+  });
+
+  it('compares a primitive expectation', () => {
+    expect(verifyChain([], undefined, undefined, 'tenant-a').ok).toBe(true);
+  });
+});

@@ -52,6 +52,7 @@ edge runtimes). Entry points:
 | ------------------------------- | --------------------------------------------------------------- |
 | `auditable-mcp-sdk`             | The runtime-agnostic core (session, host, L2, verify, storage)  |
 | `auditable-mcp-sdk/mcp`         | The §6 wire binding: `audit/*` on a real MCP connection          |
+| `auditable-mcp-sdk/reasons`     | The Tier-1 reason and anomaly vocabulary (§7.6, §12.2)          |
 | `auditable-mcp-sdk/node`        | Node adapters: ambient session (`AsyncLocalStorage`), `node:crypto` engine |
 | `auditable-mcp-sdk/noble`       | The universal default crypto engine (explicit access)           |
 | `auditable-mcp-sdk/aws-kms`     | The AWS KMS signer/verifier adapter                             |

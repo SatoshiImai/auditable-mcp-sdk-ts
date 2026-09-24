@@ -33,6 +33,9 @@ stay symmetric by design.
   tail, take the same `seq` and `previous_hash`, and are all answered `accept` - the tool acts on
   records the ledger cannot hold. The in-memory, unwitnessed host was the only configuration without
   the window, which is why the suite never saw it.
+- **`auditable-mcp-sdk/reasons`** is an entry point. The Tier-1 vocabulary was importable from no
+  entry point at all, though this file already named `HOST_UNWITNESSED` as a public addition; the
+  Python port has always had it as `auditable_mcp.reasons`.
 - **`transportFor`** picks what §6.2 permits for a session that was not negotiated, and refuses to
   return a transport for the third, non-conformant posture.
 - **The MCP wire binding** (`auditable-mcp-sdk/mcp`). `McpAuditTransport` (tool) and
