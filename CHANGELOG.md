@@ -28,6 +28,9 @@ stay symmetric by design.
   since `audit/outcome` has no response channel. `AmcpSession` takes a `witnessVerifier`
   (`WitnessRegistryVerifier`) and enforces §7.2's precedence. `SealedRecord` carries
   `host_signature` / `host_key_id`, absent when unwitnessed.
+- **The terminal outcome never replaces the body's error.** A throwing disposer reached the caller
+  as a `SuppressedError` wrapping the body's own error. An outcome has no response channel (§6), so
+  losing one is a completeness gap the host resolves (§10.8) - it is logged, not thrown.
 - **A tool-side failure is no longer reported as the host's.** Building the attempt signs it under
   Level 2, and that happened inside the transport-fault conversion, so a dead KMS surfaced as
   `AmcpAbortedError(host-unavailable)` - an operator sent to a host that was answering perfectly

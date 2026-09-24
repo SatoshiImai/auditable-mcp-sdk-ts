@@ -365,7 +365,18 @@ export class AuditedAction implements AsyncDisposable {
     }
     this.#finished = true;
     const outcome = this.#outcome === 'success' ? Outcome.SUCCESS : Outcome.FAILED;
-    await this.#session._emitOutcome(this, outcome);
+    try {
+      await this.#session._emitOutcome(this, outcome);
+    } catch (error) {
+      // §6: an outcome is a notification with no response channel, so there is nothing to retry and
+      // nothing to tell the host; losing it leaves a completeness gap the host resolves on its own
+      // (§10.8). Throwing from a disposer would replace the body's error with the audit layer's - as
+      // a SuppressedError wrapping it - and the body's is the one the caller must act on.
+      console.error(
+        'auditable-mcp: could not emit the terminal outcome; the operation is left unresolved (§10.8)',
+        error,
+      );
+    }
   }
 
   /** @internal Build and stamp the wire event for `outcome`, reusing the shared correlation id. */

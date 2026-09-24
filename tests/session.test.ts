@@ -3,7 +3,7 @@ import { AuditHost } from '../src/host';
 import { InProcessTransport } from '../src/in-process';
 import { type AttemptResponse, Level, SPEC_VERSION, Witness } from '../src/models';
 import { AmcpAbortedError, AmcpSession } from '../src/session';
-import { AmcpUsageError, type AuditEndpoint, type AuditTransport, reject } from '../src/transport';
+import { AmcpUsageError, type AuditEndpoint, type AuditTransport, accept, reject } from '../src/transport';
 import { verifyLedger } from '../src/verify';
 import { withAudit } from '../src/with-audit';
 import { FixedDeps, L2_CAPABILITY, MonotonicClock, OkVerifier, StubSigner } from './helpers';
@@ -286,5 +286,48 @@ describe('a tool-side failure is not the host’s failure (§7.2, §7.6)', () =>
       })(),
     ).rejects.toBeInstanceOf(AmcpAbortedError);
     expect(endpoint.outcomes).toBe(1);
+  });
+});
+
+/** Accepts the attempt, then the wire dies before the outcome can be sent. */
+class AcceptsThenDies implements AuditEndpoint {
+  readonly capability = {
+    spec_version: SPEC_VERSION,
+    level: Level.L1,
+    attempt: 'request',
+    witness: Witness.NONE,
+  } as const;
+  async handleAttempt(): Promise<AttemptResponse> {
+    return accept(0, '0'.repeat(64), '2026-07-15T00:00:01.000Z', '0'.repeat(64));
+  }
+  async handleOutcome(): Promise<void> {
+    throw new Error('the wire went away');
+  }
+}
+
+describe('the terminal outcome never replaces the body’s error (§6, §10.8)', () => {
+  const spec = { target: { kind: 'table', ref: 'customers' }, mutates: false, egress: false } as const;
+
+  it('the body’s error reaches the caller', async () => {
+    const session = new AmcpSession(new InProcessTransport(new AcceptsThenDies()), 'call-1', {
+      deps: new FixedDeps(),
+    });
+    // A throwing disposer would reach the caller as a SuppressedError wrapping this one.
+    await expect(
+      (async () => {
+        await using _action = await session.action('db.read', spec.target, spec);
+        throw new Error('the real problem');
+      })(),
+    ).rejects.toThrow('the real problem');
+  });
+
+  it('a successful body does not fail on a lost outcome', async () => {
+    const session = new AmcpSession(new InProcessTransport(new AcceptsThenDies()), 'call-1', {
+      deps: new FixedDeps(),
+    });
+    await (async () => {
+      await using action = await session.action('db.read', spec.target, spec);
+      action.succeeded();
+    })();
   });
 });
