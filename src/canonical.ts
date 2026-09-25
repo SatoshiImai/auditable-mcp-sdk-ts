@@ -55,15 +55,40 @@ export function hasUnsafeNumber(value: unknown): boolean {
   return false;
 }
 
+/** A UTF-16 code unit sequence that is not well-formed: a surrogate without its pair. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * Report whether any string in `value`, member names included, carries a lone surrogate (§8.1).
+ *
+ * Such a string is not a sequence of Unicode scalar values, has no UTF-8 encoding, and so no JCS form
+ * two implementations agree on [RFC-7493] §2.1.
+ */
+export function hasLoneSurrogate(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return LONE_SURROGATE.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(hasLoneSurrogate);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value).some(([key, member]) => LONE_SURROGATE.test(key) || hasLoneSurrogate(member));
+  }
+  return false;
+}
+
 /**
  * Serialize a JSON-compatible value to its RFC 8785 (JCS) canonical string.
  *
- * @throws {CanonicalizationError} If any contained number is outside the §8.1 domain, or the value
- *   has no JSON form.
+ * @throws {CanonicalizationError} If any contained number is outside the §8.1 domain, a string carries a
+ *   lone surrogate, or the value has no JSON form.
  */
 export function canonicalize(value: unknown): string {
   if (hasUnsafeNumber(value)) {
     throw new CanonicalizationError('a numeric value is not canonicalizable (non-finite or outside ±(2^53-1)) (§8.1)');
+  }
+  if (hasLoneSurrogate(value)) {
+    throw new CanonicalizationError('a string carries a lone surrogate, which has no canonical form (§8.1)');
   }
   const canonical = jcsCanonicalize(value as Parameters<typeof jcsCanonicalize>[0]);
   if (canonical === undefined) {

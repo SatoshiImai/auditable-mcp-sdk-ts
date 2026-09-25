@@ -9,3 +9,4 @@
 
 export { audited, currentSession, runWithSession } from './context';
 export { nodeEd25519Engine } from './crypto';
+export { type FetchHandler, toNodeListener } from './http';

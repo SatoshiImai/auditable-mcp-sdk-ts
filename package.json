@@ -1,7 +1,7 @@
 {
   "name": "auditable-mcp-sdk",
-  "version": "0.2.1",
-  "description": "Auditable MCP SDK — a protocol machine for tool self-attestation into a tamper-evident host ledger (auditable-mcp/0.1.1).",
+  "version": "0.3.0",
+  "description": "Auditable MCP SDK — a protocol machine for tool self-attestation into a tamper-evident host ledger (auditable-mcp/0.3).",
   "type": "module",
   "license": "MIT",
   "author": "Satoshi Imai",
@@ -24,6 +24,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
+    "./mcp/http": {
+      "types": "./dist/mcp/http.d.ts",
+      "import": "./dist/mcp/http.js"
+    },
+    "./reasons": {
+      "types": "./dist/reasons.d.ts",
+      "import": "./dist/reasons.js"
     },
     "./node": {
       "types": "./dist/node/index.d.ts",
@@ -52,6 +64,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check . && tsc --noEmit",
     "format": "biome check --write .",
+    "walk": "tsx walk/run.ts",
     "spec:check": "tsx scripts/sync-spec.ts --check",
     "spec:sync": "tsx scripts/sync-spec.ts"
   },
@@ -62,16 +75,23 @@
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@aws-sdk/client-kms": "^3.0.0"
+    "@aws-sdk/client-kms": "^3.0.0",
+    "@modelcontextprotocol/server": "~2.1.0"
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-kms": {
+      "optional": true
+    },
+    "@modelcontextprotocol/server": {
       "optional": true
     }
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.8",
+    "@modelcontextprotocol/client": "^2.1.0",
+    "@modelcontextprotocol/server": "^2.1.0",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "ajv": "^8.20.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",

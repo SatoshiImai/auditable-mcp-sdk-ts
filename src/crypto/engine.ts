@@ -20,6 +20,8 @@ export interface Ed25519KeyPair {
 /** The Ed25519 primitive: keygen, detached sign, and verify over raw keys. */
 export interface Ed25519Engine {
   generateKeyPair(): Ed25519KeyPair;
+  /** The public half of a stored seed, for a tool that reads its key back rather than minting one. */
+  publicKeyOf(privateKey: Uint8Array): Uint8Array;
   sign(message: Uint8Array, privateKey: Uint8Array): Uint8Array;
   verify(message: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean;
 }

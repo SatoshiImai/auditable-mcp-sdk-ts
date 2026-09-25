@@ -23,6 +23,32 @@ const VENDORED_SUBDIRS = ['schema', 'vectors'] as const;
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VENDORED_SPEC_DIR = join(REPO_ROOT, 'spec');
+const VENDORED_INTEROP_DIR = join(REPO_ROOT, 'interop');
+/**
+ * Vendored beside the spec, from the same source repository, but not part of it: the interop vectors
+ * pin what the two SDK ports agree on where §5.1 deliberately says nothing, so an implementation
+ * that ignores them is still conformant.
+ */
+const INTEROP_SUBDIR = 'interop';
+
+/** The (source, vendored) directory pairs this script keeps in step. */
+function roots(source: string): { src: string; dst: string }[] {
+  return [
+    ...VENDORED_SUBDIRS.map((subdir) => ({ src: join(source, subdir), dst: join(VENDORED_SPEC_DIR, subdir) })),
+    { src: join(source, '..', INTEROP_SUBDIR), dst: VENDORED_INTEROP_DIR },
+  ];
+}
+
+/** Every (source file, vendored file) pair the roots hold, in a stable order. */
+function pairs(source: string): { src: string; dst: string }[] {
+  const found: { src: string; dst: string }[] = [];
+  for (const { src, dst } of roots(source)) {
+    for (const srcPath of walkJson(src).sort()) {
+      found.push({ src: srcPath, dst: join(dst, relative(src, srcPath)) });
+    }
+  }
+  return found;
+}
 const DEFAULT_SOURCE = join(REPO_ROOT, '..', 'mcp-audit-extension', 'spec');
 
 function resolveSource(cliSource: string | undefined): string {
@@ -50,58 +76,46 @@ function walkJson(root: string): string[] {
   return out;
 }
 
-function relativeJsonFiles(base: string): string[] {
-  const files: string[] = [];
-  for (const subdir of VENDORED_SUBDIRS) {
-    for (const path of walkJson(join(base, subdir))) {
-      files.push(relative(base, path));
-    }
-  }
-  return files.sort();
-}
-
 function check(source: string): boolean {
-  const sourceFiles = new Set(relativeJsonFiles(source));
-  const vendoredFiles = new Set(relativeJsonFiles(VENDORED_SPEC_DIR));
+  const expected = pairs(source);
+  const known = new Set(expected.map(({ dst }) => dst));
   let ok = true;
 
-  for (const rel of [...sourceFiles].filter((f) => !vendoredFiles.has(f)).sort()) {
-    console.error(`missing in vendored spec: ${rel}`);
-    ok = false;
-  }
-  for (const rel of [...vendoredFiles].filter((f) => !sourceFiles.has(f)).sort()) {
-    console.error(`stale file in vendored spec (not in source): ${rel}`);
-    ok = false;
-  }
-  for (const rel of [...sourceFiles].filter((f) => vendoredFiles.has(f)).sort()) {
-    const a = readFileSync(join(source, rel));
-    const b = readFileSync(join(VENDORED_SPEC_DIR, rel));
-    if (!a.equals(b)) {
-      console.error(`content drift: ${rel}`);
+  for (const { src, dst } of expected) {
+    if (!existsSync(dst)) {
+      console.error(`missing in vendored copy: ${relative(REPO_ROOT, dst)}`);
       ok = false;
+    } else if (!readFileSync(src).equals(readFileSync(dst))) {
+      console.error(`content drift: ${relative(REPO_ROOT, dst)}`);
+      ok = false;
+    }
+  }
+  for (const { dst } of roots(source)) {
+    for (const stale of walkJson(dst)) {
+      if (!known.has(stale)) {
+        console.error(`stale file in vendored copy (not in source): ${relative(REPO_ROOT, stale)}`);
+        ok = false;
+      }
     }
   }
 
   if (ok) {
-    console.log(`vendored spec is in sync (${sourceFiles.size} files)`);
+    console.log(`vendored copies are in sync (${expected.length} files)`);
   }
   return ok;
 }
 
 function sync(source: string): number {
+  for (const { dst } of roots(source)) {
+    if (existsSync(dst)) {
+      rmSync(dst, { recursive: true, force: true });
+    }
+  }
   let copied = 0;
-  for (const subdir of VENDORED_SUBDIRS) {
-    const srcDir = join(source, subdir);
-    const dstDir = join(VENDORED_SPEC_DIR, subdir);
-    if (existsSync(dstDir)) {
-      rmSync(dstDir, { recursive: true, force: true });
-    }
-    for (const srcPath of walkJson(srcDir)) {
-      const dstPath = join(dstDir, relative(srcDir, srcPath));
-      mkdirSync(dirname(dstPath), { recursive: true });
-      writeFileSync(dstPath, readFileSync(srcPath));
-      copied += 1;
-    }
+  for (const { src, dst } of pairs(source)) {
+    mkdirSync(dirname(dst), { recursive: true });
+    writeFileSync(dst, readFileSync(src));
+    copied += 1;
   }
   console.log(`vendored ${copied} files from ${source}`);
   return copied;
