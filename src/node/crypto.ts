@@ -33,6 +33,10 @@ export const nodeEd25519Engine: Ed25519Engine = {
       privateKey: new Uint8Array(Buffer.from(privateJwk.d, 'base64url')),
     };
   },
+  publicKeyOf(privateKey) {
+    const jwk = createPublicKey(privateKeyFromSeed(privateKey)).export({ format: 'jwk' }) as { x: string };
+    return new Uint8Array(Buffer.from(jwk.x, 'base64url'));
+  },
   sign(message, privateKey) {
     return new Uint8Array(sign(null, message, privateKeyFromSeed(privateKey)));
   },

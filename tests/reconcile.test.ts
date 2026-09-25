@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { BoundaryObserver, reconcile } from '../src/l2';
 import type { SealedRecord } from '../src/ledger';
 
-function egressRecord(callId: string, ref: string): SealedRecord {
+function egressRecord(sessionId: string, ref: string): SealedRecord {
   return {
-    event: { call_id: callId, egress: true, target_resource: { kind: 'api', ref } },
+    event: { session_id: sessionId, egress: true, target_resource: { kind: 'api', ref } },
     seq: 0,
     host_ts: '2026-07-15T00:00:01.000Z',
     previous_hash: '0'.repeat(64),
@@ -17,7 +17,7 @@ describe('BoundaryObserver', () => {
     const observer = new BoundaryObserver();
     observer.observeEgress('call-1', 'api.example.com');
     observer.observeEgress('call-2', 'other.example.com');
-    expect(observer.forCall('call-1')).toEqual([{ callId: 'call-1', destination: 'api.example.com' }]);
+    expect(observer.forCall('call-1')).toEqual([{ sessionId: 'call-1', destination: 'api.example.com' }]);
   });
 });
 

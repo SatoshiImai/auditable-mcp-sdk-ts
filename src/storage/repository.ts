@@ -24,9 +24,16 @@ export class RepositoryError extends Error {
 /** A durable, append-only store of sealed records, partitioned per §10.5. */
 export interface LedgerRepository {
   /**
-   * Durably append `record` to `partition`.
+   * Durably append `record` to `partition`, conditionally on its `seq`.
    *
-   * @throws {RepositoryError} If the record could not be durably persisted.
+   * The append is expected to succeed only if `record.seq` is the partition's next position - a
+   * conditional put, a unique key on (partition, seq), or a compare-and-set on the tail - so two writers
+   * can never both land a record at one position (§7.1 atomic sealing). A `RepositoryError` may leave it
+   * unknown whether the record landed (a timeout after the write, for example); the host then re-reads
+   * the tail with `loadTail` before it seals again and adopts the record if it is there.
+   *
+   * @throws {RepositoryError} If the record could not be durably persisted, or `record.seq` is not the
+   *   next position.
    */
   append(partition: string, record: SealedRecord): Promise<void>;
 

@@ -15,13 +15,13 @@ export const UNREPORTED_EGRESS = 'unreported-egress';
 
 /** An egress the host observed independently at the boundary. */
 export interface EgressObservation {
-  callId: string;
+  sessionId: string;
   destination: string;
 }
 
 /** A mismatch between self-reports and boundary observations. */
 export interface ReconcileAnomaly {
-  callId: string;
+  sessionId: string;
   kind: string;
   destination: string;
   detail: string;
@@ -32,13 +32,13 @@ export class BoundaryObserver {
   #observations: EgressObservation[] = [];
 
   /** Record an observed egress for a call. */
-  observeEgress(callId: string, destination: string): void {
-    this.#observations.push({ callId, destination });
+  observeEgress(sessionId: string, destination: string): void {
+    this.#observations.push({ sessionId, destination });
   }
 
   /** Return the observations recorded for a given call. */
-  forCall(callId: string): EgressObservation[] {
-    return this.#observations.filter((observation) => observation.callId === callId);
+  forCall(sessionId: string): EgressObservation[] {
+    return this.#observations.filter((observation) => observation.sessionId === sessionId);
   }
 }
 
@@ -59,18 +59,18 @@ function targetRef(record: SealedRecord): unknown {
 export function reconcile(
   records: SealedRecord[],
   observations: EgressObservation[],
-  callId: string,
+  sessionId: string,
 ): ReconcileAnomaly[] {
   const reported = new Set<unknown>();
   for (const record of records) {
-    if (record.event[fields.CALL_ID] === callId && record.event[fields.EGRESS]) {
+    if (record.event[fields.SESSION_ID] === sessionId && record.event[fields.EGRESS]) {
       reported.add(targetRef(record));
     }
   }
 
   const observed = new Set<string>();
   for (const observation of observations) {
-    if (observation.callId === callId) {
+    if (observation.sessionId === sessionId) {
       observed.add(observation.destination);
     }
   }
@@ -79,7 +79,7 @@ export function reconcile(
     .filter((destination) => !reported.has(destination))
     .sort()
     .map((destination) => ({
-      callId,
+      sessionId,
       kind: UNREPORTED_EGRESS,
       destination,
       detail: 'observed egress with no self-report',

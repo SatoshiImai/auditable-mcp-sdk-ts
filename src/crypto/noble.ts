@@ -17,18 +17,29 @@ export const nobleEd25519Engine: Ed25519Engine = {
     const { secretKey, publicKey } = ed25519.keygen();
     return { privateKey: secretKey, publicKey };
   },
+  publicKeyOf(privateKey) {
+    return ed25519.getPublicKey(privateKey);
+  },
   sign(message, privateKey) {
     return ed25519.sign(message, privateKey);
   },
   verify(message, signature, publicKey) {
-    return ed25519.verify(signature, message, publicKey);
+    // RFC 8032 §5.1.7 as OpenSSL applies it: canonical encodings only. noble's default (ZIP-215) accepts
+    // encodings the node engine refuses, and two engines must not disagree on one signature.
+    return ed25519.verify(signature, message, publicKey, { zip215: false });
   },
 };
 
+/** The length of an ES256 signature in the fixed `r || s` form (§5.1). */
+export const ES256_SIGNATURE_BYTES = 64;
+
 /** The universal ECDSA (P-256 / SHA-256) verify primitive used by default for KMS/HSM keys. */
 export const nobleEcdsaVerify: EcdsaVerify = (payload, signatureRaw, publicKeyPoint) => {
+  // §5.1 admits only the 64-byte `r || s` form. noble would otherwise try DER first.
+  if (signatureRaw.length !== ES256_SIGNATURE_BYTES) {
+    return false;
+  }
   const digest = sha256(payload);
-  // The wire signature is the fixed 64-byte IEEE P1363 r||s form (§5.1), which noble accepts directly.
-  // lowS:false — a KMS ECDSA_SHA_256 signature may be high-S; it still authenticates.
-  return p256.verify(signatureRaw, digest, publicKeyPoint, { lowS: false });
+  // lowS:false — a KMS ECDSA_SHA_256 signature may be high-S; it still authenticates (§5.1).
+  return p256.verify(signatureRaw, digest, publicKeyPoint, { lowS: false, format: 'compact' });
 };

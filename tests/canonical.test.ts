@@ -67,3 +67,12 @@ describe('hashCanonical returns a sha256:-prefixed commitment', () => {
     expect(hashCanonical({ a: 1, b: 2 })).toBe(hashCanonical({ b: 2, a: 1 }));
   });
 });
+
+describe('a value with no canonical form (§8.1)', () => {
+  it('is refused rather than hashed as something else', () => {
+    // JCS has no serialization for a function or an undefined value; hashing "whatever came back"
+    // would put a record in the chain whose bytes no other implementation can reproduce.
+    expect(() => canonicalize(undefined as never)).toThrow(CanonicalizationError);
+    expect(() => canonicalize((() => 0) as never)).toThrow(CanonicalizationError);
+  });
+});
