@@ -19,6 +19,7 @@ export class InProcessTransport implements AuditTransport {
   }
 
   negotiate(offered: AuditCapability): NegotiationResult {
+    // The embedded endpoint always declares, so this is never UNDECLARED (§6.1).
     return negotiate(this.#endpoint.capability, offered);
   }
 

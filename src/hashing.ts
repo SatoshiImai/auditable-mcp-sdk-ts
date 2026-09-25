@@ -13,6 +13,32 @@ import { canonicalize, sha256Hex } from './canonical';
 export const GENESIS_HASH = '0'.repeat(64);
 
 /**
+ * Return the bytes a countersignature covers: the host-assigned fields and the ledger's name (§7.1).
+ *
+ * The payload carries no signature field, so there is no self-reference, and it is not the §8.2
+ * record-hash preimage: a record sealed with a countersignature and the same record sealed without one
+ * have the same `record_hash` (§5.2). `log_id` names the chain the statement is about, so a
+ * countersignature cannot be presented as a statement about another ledger.
+ *
+ * @param seq The partition-monotonic ledger sequence assigned by the host.
+ * @param hostTs The authoritative host timestamp (ISO-8601).
+ * @param logId The name the host gives the partition's chain.
+ * @param previousHash The preceding record's `record_hash`.
+ * @param recordHash This record's hash.
+ * @returns The RFC 8785 canonical form of the five fields, UTF-8 encoded.
+ */
+export function countersignaturePayload(
+  seq: number,
+  hostTs: string,
+  logId: string,
+  previousHash: string,
+  recordHash: string,
+): Uint8Array {
+  const payload = { host_ts: hostTs, log_id: logId, previous_hash: previousHash, record_hash: recordHash, seq };
+  return new TextEncoder().encode(canonicalize(payload));
+}
+
+/**
  * Compute the bare-hex SHA-256 record hash over the §8.2 preimage.
  *
  * The preimage is `{event, host_ts, previous_hash, seq}` serialized via RFC 8785 (JCS) and hashed:

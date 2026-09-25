@@ -6,19 +6,20 @@
  */
 
 import type { SealedRecord } from '../ledger';
-import type { LedgerRepository } from './repository';
+import { type LedgerRepository, RepositoryError } from './repository';
 
 /** Holds sealed records per partition in memory (implements `LedgerRepository`). */
 export class InMemoryLedgerRepository implements LedgerRepository {
   #byPartition = new Map<string, SealedRecord[]>();
 
   async append(partition: string, record: SealedRecord): Promise<void> {
-    const records = this.#byPartition.get(partition);
-    if (records === undefined) {
-      this.#byPartition.set(partition, [record]);
-    } else {
-      records.push(record);
+    const records = this.#byPartition.get(partition) ?? [];
+    const next = records.length === 0 ? 0 : (records[records.length - 1] as SealedRecord).seq + 1;
+    if (record.seq !== next) {
+      throw new RepositoryError(`seq ${record.seq} is not the next position ${next} of partition ${partition}`);
     }
+    records.push(record);
+    this.#byPartition.set(partition, records);
   }
 
   async loadTail(partition: string): Promise<SealedRecord | null> {

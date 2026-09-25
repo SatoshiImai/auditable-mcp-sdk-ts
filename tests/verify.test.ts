@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SealedRecord } from '../src/ledger';
 import { Ledger } from '../src/ledger';
-import { firstSealedValidationError, firstValidationError } from '../src/models';
+import { firstSealedValidationError, firstValidationError, SPEC_VERSION } from '../src/models';
 import {
   DEFAULT_ADAPTER,
   DIGEST_MISMATCH,
@@ -14,6 +14,7 @@ import {
   verifyChain,
   verifyLedger,
 } from '../src/verify';
+import { SESSION } from './helpers';
 import { chainSignedVector, chainVector } from './vectors';
 
 function boundaryEvent(id: string, outcome = 'attempted'): Record<string, unknown> {
@@ -27,9 +28,9 @@ function amcpEvent(
 ): Record<string, unknown> {
   return {
     id,
-    spec_version: 'auditable-mcp/0.2',
+    spec_version: SPEC_VERSION,
     ts: '2026-07-15T00:00:01.000Z',
-    call_id: 'call_abc',
+    session_id: SESSION,
     action_type: 'db.read',
     mutates: false,
     egress: false,
@@ -39,21 +40,24 @@ function amcpEvent(
   };
 }
 
+/** An event in the shape v0.1.1 sealed: the call named by its JSON-RPC `call_id`, no session. */
+function legacyEvent(id: string, outcome = 'attempted'): Record<string, unknown> {
+  const { session_id: _session, ...event } = amcpEvent(id, outcome);
+  return { ...event, spec_version: 'auditable-mcp/0.1.1', call_id: 'call_abc' };
+}
+
 describe('verifyLedger is read-lenient on spec_version', () => {
   it('verifies a chain sealed under an earlier published spec_version (immutable evidence)', () => {
     const ledger = new Ledger('tenant-a');
-    const legacy = { spec_version: 'auditable-mcp/0.1.1' };
-    ledger.append(amcpEvent('00000000-0000-4000-8000-000000000001', 'attempted', legacy), '2026-07-15T00:00:01.000Z');
-    ledger.append(amcpEvent('00000000-0000-4000-8000-000000000001', 'success', legacy), '2026-07-15T00:00:02.000Z');
+    ledger.append(legacyEvent('00000000-0000-4000-8000-000000000001'), '2026-07-15T00:00:01.000Z');
+    ledger.append(legacyEvent('00000000-0000-4000-8000-000000000001', 'success'), '2026-07-15T00:00:02.000Z');
     const report = verifyLedger(ledger.records());
     expect(report.ok).toBe(true);
     expect(report.issues).toHaveLength(0);
   });
 
   it('ingest stays strict while verification is lenient (read/write split)', () => {
-    const legacy = amcpEvent('00000000-0000-4000-8000-000000000001', 'attempted', {
-      spec_version: 'auditable-mcp/0.1.1',
-    });
+    const legacy = legacyEvent('00000000-0000-4000-8000-000000000001');
     expect(firstValidationError(legacy)).not.toBeNull();
     expect(firstSealedValidationError(legacy)).toBeNull();
   });
@@ -107,7 +111,7 @@ describe('verifyChain exempts a record that names no call from correlation', () 
   it('does not seed a wildcard: a real orphan whose id is present is still reported', () => {
     const ledger = new Ledger('tenant-a');
     ledger.append({ kind: 'prompt' }, '2026-07-15T00:00:01.000Z');
-    ledger.append({ kind: 'tool', call: 'call-1' }, '2026-07-15T00:00:02.000Z');
+    ledger.append({ kind: 'tool', call: SESSION }, '2026-07-15T00:00:02.000Z');
     const adapter: RecordAdapter = { ...DEFAULT_ADAPTER, idOf: (event) => event.call, isAttempt: () => false };
     const report = verifyChain(ledger.records(), undefined, adapter);
     expect(report.issues.map((i) => i.kind)).toEqual([ORPHANED_OUTCOME]);
@@ -196,8 +200,8 @@ describe('verifyChain matches the governed identity against expectedPrincipal', 
 
 function sealedBoundaryPair(): Ledger {
   const ledger = new Ledger('tenant-a');
-  ledger.append(boundaryEvent('call-1', 'attempted'), '2026-07-15T00:00:01.000Z');
-  ledger.append(boundaryEvent('call-1', 'denied'), '2026-07-15T00:00:02.000Z');
+  ledger.append(boundaryEvent(SESSION, 'attempted'), '2026-07-15T00:00:01.000Z');
+  ledger.append(boundaryEvent(SESSION, 'denied'), '2026-07-15T00:00:02.000Z');
   return ledger;
 }
 
@@ -268,7 +272,7 @@ describe('verifyChain audits a non-A-MCP envelope schema-free', () => {
 
   it('still detects a mutated body, and never emits schema-invalid', () => {
     const records = sealedBoundaryPair().records();
-    records[1] = { ...(records[1] as SealedRecord), event: boundaryEvent('call-1', 'expired') };
+    records[1] = { ...(records[1] as SealedRecord), event: boundaryEvent(SESSION, 'expired') };
     const report = verifyChain(records);
     expect(report.ok).toBe(false);
     expect(report.issues.some((i) => i.kind === RECORD_HASH_MISMATCH)).toBe(true);
@@ -283,5 +287,17 @@ describe('verifyChain audits a non-A-MCP envelope schema-free', () => {
     const records = ledger.records();
     records.splice(1, 1);
     expect(verifyChain(records).issues.some((i) => i.kind === SEQ_GAP)).toBe(true);
+  });
+});
+
+describe('the principal is compared as a value (§11.4)', () => {
+  it('refuses a structured expectation', () => {
+    // §10.10 binds a single primitive; a structure compares by identity here and by value in Python,
+    // so two conforming verifiers would return opposite verdicts on one ledger.
+    expect(() => verifyChain([], undefined, undefined, { tenant: 'a' })).toThrow('primitive');
+  });
+
+  it('compares a primitive expectation', () => {
+    expect(verifyChain([], undefined, undefined, 'tenant-a').ok).toBe(true);
   });
 });

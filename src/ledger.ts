@@ -23,6 +23,11 @@ export interface SealedRecord {
   readonly host_ts: string;
   readonly previous_hash: string;
   readonly record_hash: string;
+  // The countersignature (§5.2, §7.1): written by a host that declares `countersign: "host"`, absent
+  // otherwise, and omitted from the persisted JSON when absent.
+  readonly host_signature?: string;
+  readonly host_key_id?: string;
+  readonly log_id?: string;
 }
 
 /** An append-only, single-partition, tamper-evident ledger. */

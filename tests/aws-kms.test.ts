@@ -6,7 +6,7 @@ import { AwsKmsSigner, AwsKmsVerifier, type KmsClient, loadKmsPublicKey } from '
 import { AmcpSession } from '../src/session';
 import { verifyLedger } from '../src/verify';
 import { withAudit } from '../src/with-audit';
-import { FixedDeps, L2_CAPABILITY, MonotonicClock } from './helpers';
+import { eventIdAt, FixedDeps, L2_CAPABILITY, MonotonicClock, makeAttempt, SESSION } from './helpers';
 
 // The fixed P-256 SubjectPublicKeyInfo prefix; the uncompressed point follows it.
 const P256_SPKI_PREFIX = Uint8Array.from(Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex'));
@@ -22,11 +22,11 @@ class FakeKms implements KmsClient {
     return { Signature: signature.toBytes('der') };
   }
 
-  async getPublicKey(): Promise<{ PublicKey?: Uint8Array }> {
+  async getPublicKey(): Promise<{ PublicKey?: Uint8Array; KeySpec?: string }> {
     const der = new Uint8Array(P256_SPKI_PREFIX.length + this.#publicPoint.length);
     der.set(P256_SPKI_PREFIX);
     der.set(this.#publicPoint, P256_SPKI_PREFIX.length);
-    return { PublicKey: der };
+    return { PublicKey: der, KeySpec: 'ECC_NIST_P256' };
   }
 }
 
@@ -44,7 +44,8 @@ describe('AWS KMS adapter (ECDSA P-256)', () => {
     const verifier = await AwsKmsVerifier.fromKms(kms, { 'tool-1': 'arn:key' });
 
     const host = new AuditHost('tenant-a', L2_CAPABILITY, { verifier, clock: new MonotonicClock() });
-    const session = new AmcpSession(new InProcessTransport(host), 'call-1', {
+    host.openSession(SESSION);
+    const session = new AmcpSession(new InProcessTransport(host), SESSION, {
       deps: new FixedDeps(),
       signer: new AwsKmsSigner(kms, 'arn:key', { eventKeyId: 'tool-1' }),
     });
@@ -57,5 +58,23 @@ describe('AWS KMS adapter (ECDSA P-256)', () => {
     expect(result).toBe('ok');
     expect(host.records()).toHaveLength(2);
     expect(verifyLedger(host.records(), host.digest()).ok).toBe(true);
+  });
+});
+
+describe('a KMS client that answers badly', () => {
+  it('names the missing field rather than indexing into nothing', async () => {
+    const client = {
+      sign: async () => ({}),
+      getPublicKey: async () => ({}),
+    };
+    await expect(
+      new AwsKmsSigner(client as never, 'arn:aws:kms:::key/x').sign(makeAttempt(eventIdAt(1)), 0),
+    ).rejects.toThrow('Signature');
+  });
+
+  it('refuses a KMS key the adapter cannot sign with', async () => {
+    // §5.1 defines P-256 and Ed25519; a key of no stated spec, such as RSA, is a provisioning error.
+    const client = { getPublicKey: async () => ({ PublicKey: new Uint8Array([1, 2, 3]) }) };
+    await expect(loadKmsPublicKey(client as never, 'arn:aws:kms:::key/x')).rejects.toThrow();
   });
 });

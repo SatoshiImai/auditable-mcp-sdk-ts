@@ -3,19 +3,21 @@ import {
   attemptResponseSchema,
   auditCapabilitySchema,
   auditEventSchema,
+  Countersign,
   firstValidationError,
   Level,
   Outcome,
   SPEC_VERSION,
   Status,
 } from '../src/models';
+import { SESSION } from './helpers';
 import { eventVectors } from './vectors';
 
 const base = {
   id: '00000000-0000-4000-8000-000000000001',
   spec_version: SPEC_VERSION,
   ts: '2026-07-15T00:00:01.000Z',
-  call_id: 'call_abc',
+  session_id: SESSION,
   action_type: 'db.read',
   mutates: false,
   egress: false,
@@ -65,17 +67,27 @@ describe('auditEventSchema pins reason to the abort codes and requires it for ab
 
 describe('auditCapabilitySchema requires all three fields with no defaulting (§6.1)', () => {
   it('rejects a capability that omits spec_version', () => {
-    expect(auditCapabilitySchema.safeParse({ level: Level.L2, attempt: 'request' }).success).toBe(false);
+    expect(
+      auditCapabilitySchema.safeParse({ level: Level.L2, attempt: 'request', countersign: Countersign.NONE }).success,
+    ).toBe(false);
   });
 
   it('rejects a capability that omits level or attempt (no silent coercion)', () => {
-    expect(auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION, attempt: 'request' }).success).toBe(false);
+    expect(
+      auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION, attempt: 'request', countersign: Countersign.NONE })
+        .success,
+    ).toBe(false);
     expect(auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION, level: Level.L1 }).success).toBe(false);
     expect(auditCapabilitySchema.safeParse({ spec_version: SPEC_VERSION }).success).toBe(false);
   });
 
   it('accepts a fully specified capability', () => {
-    const parsed = auditCapabilitySchema.parse({ spec_version: SPEC_VERSION, level: Level.L2, attempt: 'request' });
+    const parsed = auditCapabilitySchema.parse({
+      spec_version: SPEC_VERSION,
+      level: Level.L2,
+      attempt: 'request',
+      countersign: Countersign.NONE,
+    });
     expect(parsed.level).toBe(Level.L2);
     expect(parsed.attempt).toBe('request');
   });
@@ -93,19 +105,18 @@ describe('attemptResponseSchema discriminates on status and pins Tier-1 reasons'
       }).success,
     ).toBe(true);
     expect(attemptResponseSchema.safeParse({ status: Status.REJECT, reason: 'replay-detected' }).success).toBe(true);
-    expect(
-      attemptResponseSchema.safeParse({ status: Status.UNAVAILABLE, reason: 'internal-error', retryable: true })
-        .success,
-    ).toBe(true);
+    expect(attemptResponseSchema.safeParse({ status: Status.UNAVAILABLE, reason: 'internal-error' }).success).toBe(
+      true,
+    );
   });
 
   it('rejects a non-Tier-1 reject reason', () => {
     expect(attemptResponseSchema.safeParse({ status: Status.REJECT, reason: 'nope' }).success).toBe(false);
   });
 
-  it('rejects unavailable with retryable=false', () => {
+  it('rejects retryable, which is not a field of unavailable (§7.1)', () => {
     expect(
-      attemptResponseSchema.safeParse({ status: Status.UNAVAILABLE, reason: 'internal-error', retryable: false })
+      attemptResponseSchema.safeParse({ status: Status.UNAVAILABLE, reason: 'internal-error', retryable: true })
         .success,
     ).toBe(false);
   });
@@ -116,6 +127,6 @@ describe('Outcome / Level / Status values equal the wire strings', () => {
     expect(Outcome.ATTEMPTED).toBe('attempted');
     expect(Level.L2).toBe('L2');
     expect(Status.ACCEPT).toBe('accept');
-    expect(SPEC_VERSION).toBe('auditable-mcp/0.2');
+    expect(SPEC_VERSION).toBe('auditable-mcp/0.3');
   });
 });
