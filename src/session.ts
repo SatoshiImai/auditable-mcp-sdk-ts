@@ -174,8 +174,12 @@ export class AmcpAbortedError extends Error {
  * false: the countersignature is not established either way (§10.9).
  */
 export interface CountersignatureVerifier {
-  /** Return true if the signature verifies against the registered host key. */
-  verify(hostKeyId: string, signature: string, payload: Uint8Array): Promise<boolean>;
+  /**
+   * Return true if the signature verifies against the registered host key, false if it does not. Return
+   * `'unavailable'` when it could not be checked for a reason that is not the signature's - the host's key set
+   * could not be fetched - which the tool reads as a failure to record (§6), not as a failed countersignature.
+   */
+  verify(hostKeyId: string, signature: string, payload: Uint8Array): Promise<boolean | 'unavailable'>;
 }
 
 /** The effect + confidentiality descriptors for one audited operation (§4.2, §4.3). */
@@ -396,7 +400,12 @@ export class AmcpSession {
         response.previous_hash,
         response.record_hash,
       );
-      if (!(await this._countersignatureVerifier.verify(keyId, response.host_signature, payload))) {
+      const verdict = await this._countersignatureVerifier.verify(keyId, response.host_signature, payload);
+      if (verdict === 'unavailable') {
+        await this._emitAbortedBestEffort(action, reasons.HOST_UNAVAILABLE);
+        throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_UNAVAILABLE);
+      }
+      if (!verdict) {
         await this._emitAbortedBestEffort(action, reasons.HOST_SIGNATURE_INVALID);
         throw new AmcpAbortedError(actionType, target.ref, reasons.HOST_SIGNATURE_INVALID);
       }

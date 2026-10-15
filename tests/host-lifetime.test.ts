@@ -129,6 +129,49 @@ describe('AuditHost.resume with openSessions', () => {
   });
 });
 
+describe('a session restored with the signer tracker kept outside the ledger (§7.4)', () => {
+  async function refuseOne() {
+    const repo = new InMemoryLedgerRepository();
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, {
+      clock: new MonotonicClock(),
+      repository: repo,
+      verifier: new OkVerifier(),
+    });
+    host.openSession(SESSION);
+    await host.handleAttempt(signed(makeAttempt(eventIdAt(1)), 0));
+    // The same id with another event is refused, after its signature verified: decided, and not sealed.
+    const refused = await host.handleAttempt(signed(makeAttempt(eventIdAt(1), { action_type: 'db.write' }), 1));
+    expect(refused).toMatchObject({ status: 'reject', reason: 'replay-detected' });
+    return { repo, signers: host.signerTracker(SESSION) };
+  }
+
+  it('exports the decisions the ledger does not hold', async () => {
+    const { signers } = await refuseOne();
+    expect(signers?.decided).toEqual({ k1: [0, 1] });
+  });
+
+  it('refuses after a restart a signer_seq decided only by a refusal, when given the tracker', async () => {
+    const { repo, signers } = await refuseOne();
+    const restored = await AuditHost.resume('tenant-a', L2_CAPABILITY, {
+      clock: new MonotonicClock(),
+      repository: repo,
+      verifier: new OkVerifier(),
+      openSessions: [{ sessionId: SESSION, ...(signers === undefined ? {} : { signers }) }],
+    });
+    expect(await restored.handleAttempt(signed(makeAttempt(eventIdAt(2)), 1))).toMatchObject({
+      status: 'reject',
+      reason: 'replay-detected',
+    });
+    const forgetful = await AuditHost.resume('tenant-a', L2_CAPABILITY, {
+      clock: new MonotonicClock(),
+      repository: repo,
+      verifier: new OkVerifier(),
+      openSessions: [SESSION],
+    });
+    expect(await forgetful.handleAttempt(signed(makeAttempt(eventIdAt(2)), 1))).toMatchObject({ status: 'accept' });
+  });
+});
+
 describe('SessionNumbering resumes a session at a given value (§7.4)', () => {
   it('numbers the next signed event from the start it was given', async () => {
     const host = new AuditHost('tenant-a', L2_CAPABILITY, { clock: new MonotonicClock(), verifier: new OkVerifier() });

@@ -128,6 +128,22 @@ interface Session {
   readonly terminal: Map<string, string>;
 }
 
+/**
+ * A session's `signer_seq` tracker (§7.4): per key, the values the host decided and the highest it received with a
+ * verifying signature. A host whose sessions outlive it keeps this beside its ledger, since a refused attempt is a
+ * decision the ledger does not hold.
+ */
+export interface SignerTracker {
+  decided: Record<string, number[]>;
+  received: Record<string, number>;
+}
+
+/** A session to restore as open on `AuditHost.resume`, with the tracker kept for it outside the ledger. */
+export interface OpenSession {
+  sessionId: string;
+  signers?: SignerTracker;
+}
+
 /** A session's state rebuilt from the records sealed in it, for a session that outlives a restart. */
 function restoredSession(sessionId: string, records: readonly SealedRecord[]): Session {
   const session: Session = { decided: new Map(), received: new Map(), accepted: new Set(), terminal: new Map() };
@@ -253,12 +269,13 @@ export class AuditHost implements AuditEndpoint {
    * open from its sealed records: the attempts it accepted, the outcome sealed per operation, and per key
    * the `signer_seq` values decided and the highest received (§7.4). Its unresolved attempts are not
    * flagged, since its session has not ended. Decisions the host reached without sealing - a refused
-   * attempt - are not in the ledger and are not restored. Omitted, `resume` ends every session (§6.3).
+   * attempt - are not in the ledger; a host that kept them with `signerTracker` gives them back as
+   * `OpenSession.signers`. Omitted, `resume` ends every session (§6.3).
    */
   static async resume(
     partition: string,
     capability: AuditCapabilityInput = {},
-    options: AuditHostOptions & { repository: LedgerRepository; openSessions?: Iterable<string> },
+    options: AuditHostOptions & { repository: LedgerRepository; openSessions?: Iterable<string | OpenSession> },
   ): Promise<AuditHost> {
     const host = new AuditHost(partition, capability, options);
     const records = await options.repository.readAll(partition);
@@ -270,10 +287,21 @@ export class AuditHost implements AuditEndpoint {
         host.#issued.add(sessionId);
       }
     }
-    const open = new Set(options.openSessions ?? []);
-    for (const sessionId of open) {
+    const open = new Set<string>();
+    for (const entry of options.openSessions ?? []) {
+      const { sessionId, signers } = typeof entry === 'string' ? { sessionId: entry, signers: undefined } : entry;
+      open.add(sessionId);
       host.#issued.add(sessionId);
-      host.#sessions.set(sessionId, restoredSession(sessionId, records));
+      const session = restoredSession(sessionId, records);
+      for (const [keyId, values] of Object.entries(signers?.decided ?? {})) {
+        const decided = session.decided.get(keyId) ?? new Set<number>();
+        for (const value of values) decided.add(value);
+        session.decided.set(keyId, decided);
+      }
+      for (const [keyId, value] of Object.entries(signers?.received ?? {})) {
+        session.received.set(keyId, Math.max(session.received.get(keyId) ?? value, value));
+      }
+      host.#sessions.set(sessionId, session);
     }
     host.#flagUnresolved(records, open);
     return host;
@@ -316,6 +344,21 @@ export class AuditHost implements AuditEndpoint {
   }
 
   /** Return the sealed ledger records for this partition. */
+  /**
+   * The `signer_seq` tracker of an open session (§7.4), for a host whose sessions outlive it to keep beside its
+   * ledger and give back to `resume` as `OpenSession.signers`; undefined for a session that is not open.
+   */
+  signerTracker(sessionId: string): SignerTracker | undefined {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return undefined;
+    return {
+      decided: Object.fromEntries(
+        [...session.decided].map(([keyId, values]) => [keyId, [...values].sort((a, b) => a - b)]),
+      ),
+      received: Object.fromEntries(session.received),
+    };
+  }
+
   records(): SealedRecord[] {
     return this.#ledger.records();
   }

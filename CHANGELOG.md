@@ -34,6 +34,12 @@ Tracking spec `auditable-mcp/0.4`. The Python SDK's 0.4.0 is the same change.
     tool that resumes a session after its own restart from the last value its records show (§7.4).
   - `AuditedAction.id` names the event id the operation's attempt and outcome share, so a tool can write
     ahead, in its own records, what it is about to do with an accepted attempt.
+  - `AuditHost.signerTracker(sessionId)` exports an open session's `signer_seq` tracker, and `resume`'s
+    `openSessions` takes it back (`{ sessionId, signers }`), for a host that keeps a refused attempt's
+    decision, which the ledger does not hold, across its restart (§7.4).
+  - A `CountersignatureVerifier` may answer `'unavailable'` when it could not check a countersignature for a
+    reason that is not the signature's - the host's key set could not be fetched; the tool aborts the attempt
+    `host-unavailable`, a failure to record, rather than `host-signature-invalid`.
 
 ## 0.3.0
 
