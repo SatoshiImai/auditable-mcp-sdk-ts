@@ -446,6 +446,11 @@ export class AuditedAction implements AsyncDisposable {
     this.#saltedHash = this.#disclosure !== undefined ? saltedHashOf(this.#disclosure) : undefined;
   }
 
+  /** The event id the operation's attempt and outcome share (§7.1). */
+  get id(): string {
+    return this.#id;
+  }
+
   /**
    * The Disclosure that opens this operation's `action_context_salted_hash` (§4.3), or undefined when
    * the action was not given `commitSalted`. The SDK keeps no copy.

@@ -146,6 +146,23 @@ describe('SessionNumbering resumes a session at a given value (§7.4)', () => {
     expect(host.records().map((record) => record.event.signer_seq)).toEqual([3, 4]);
   });
 
+  it('names, on the action, the id its attempt and outcome carry', async () => {
+    const host = new AuditHost('tenant-a', undefined, { clock: new MonotonicClock() });
+    host.openSession(SESSION);
+    const session = new AmcpSession(new InProcessTransport(host), SESSION, { deps: new FixedDeps() });
+    let id = '';
+    await (async () => {
+      await using action = await session.action(
+        'db.read',
+        { kind: 'table', ref: 'customers' },
+        { mutates: false, egress: false },
+      );
+      id = action.id;
+      action.succeeded();
+    })();
+    expect(host.records().map((record) => record.event.id)).toEqual([id, id]);
+  });
+
   it('refuses a start that is not a non-negative integer', () => {
     expect(() => new SessionNumbering(-1)).toThrow(/§7.4/);
     expect(() => new SessionNumbering(1.5)).toThrow(/§7.4/);
