@@ -185,6 +185,26 @@ describe('a chain whose versions go backwards (§11.4)', () => {
   });
 });
 
+describe('a record sealed under 0.3 (§11.4)', () => {
+  it('verifies in its own shape, before a 0.4 record and not after one', () => {
+    const earlier = { ...makeAttempt(eventIdAt(2)), spec_version: 'auditable-mcp/0.3' };
+    const current = makeAttempt(eventIdAt(1));
+    expect(kinds(chain([earlier, current]))).toEqual([]);
+    expect(verifyLedger(chain([current, earlier])).issues.map((issue) => [issue.seq, issue.kind])).toEqual([
+      [1, 'schema-invalid'],
+    ]);
+  });
+
+  it('carries no salted hash, which 0.4 added', () => {
+    const salted = {
+      ...makeAttempt(eventIdAt(1)),
+      spec_version: 'auditable-mcp/0.3',
+      action_context_salted_hash: 'JXkhjdB2aytlBM4xi-ESu61_KmG5g3fY0iCjcL1u-K0',
+    };
+    expect(kinds(chain([salted]))).toEqual(['schema-invalid']);
+  });
+});
+
 describe('correlation counts only attempts sealed before the outcome (§7.2, §11.4)', () => {
   it('a success sealed before its attempt is orphaned-outcome', () => {
     const records = chain([makeAttempt(eventIdAt(1), { outcome: 'success' }), makeAttempt(eventIdAt(1))]);
