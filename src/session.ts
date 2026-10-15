@@ -36,6 +36,7 @@ import {
 } from './models';
 import { Mutex } from './mutex';
 import * as reasons from './reasons';
+import { disclosureOf, newSalt, saltedHashOf } from './salted-hash';
 import { AmcpUsageError, type AuditTransport, unavailable } from './transport';
 
 const SESSION_ID_REGEX = new RegExp(SESSION_ID_PATTERN);
@@ -168,6 +169,13 @@ export interface ActionOptions {
   disclose?: Record<string, unknown> | undefined;
   /** A value whose canonical hash is committed to, without disclosing it (§4.3). */
   commit?: unknown;
+  /**
+   * The exact internal context, committed to by its salted hash (`action_context_salted_hash`, §4.3).
+   * Prefer it to `commit` when the host belongs to another organization or the context is drawn from few
+   * possible values. The Disclosure that opens it is on {@link AuditedAction.disclosure}; the caller
+   * retains it if it may be asked to open the hash.
+   */
+  commitSalted?: Record<string, unknown> | undefined;
 }
 
 function toWire(event: Record<string, unknown>): Record<string, unknown> {
@@ -403,6 +411,8 @@ export class AuditedAction implements AsyncDisposable {
   readonly #target: TargetResource;
   readonly #options: ActionOptions;
   readonly #commitHash: string | undefined;
+  readonly #disclosure: string | undefined;
+  readonly #saltedHash: string | undefined;
   #outcome: 'success' | 'failed' | undefined;
   #finished = false;
 
@@ -414,6 +424,17 @@ export class AuditedAction implements AsyncDisposable {
     this.#target = target;
     this.#options = options;
     this.#commitHash = options.commit !== undefined ? hashCanonical(options.commit) : undefined;
+    // One salt per operation: the attempt and the outcome carry the same salted hash (§4.3).
+    this.#disclosure = options.commitSalted !== undefined ? disclosureOf(newSalt(), options.commitSalted) : undefined;
+    this.#saltedHash = this.#disclosure !== undefined ? saltedHashOf(this.#disclosure) : undefined;
+  }
+
+  /**
+   * The Disclosure that opens this operation's `action_context_salted_hash` (§4.3), or undefined when
+   * the action was not given `commitSalted`. The SDK keeps no copy.
+   */
+  get disclosure(): string | undefined {
+    return this.#disclosure;
   }
 
   /** Mark the operation successful; without this call the disposer fails closed with `failed`. */
@@ -467,6 +488,7 @@ export class AuditedAction implements AsyncDisposable {
       reason,
       action_context: this.#options.disclose,
       action_context_hash: this.#commitHash,
+      action_context_salted_hash: this.#saltedHash,
     });
     return this.#session._stamp(toWire(event as Record<string, unknown>), signerSeq);
   }

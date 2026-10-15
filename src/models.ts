@@ -19,9 +19,10 @@
 
 import { z } from 'zod';
 import { hasLoneSurrogate, MAX_SAFE_INTEGER } from './canonical';
+import { SALTED_HASH_PATTERN } from './salted-hash';
 
 // The only spec version defined by this contract; a mismatch is a hard validation error.
-export const SPEC_VERSION = 'auditable-mcp/0.3' as const;
+export const SPEC_VERSION = 'auditable-mcp/0.4' as const;
 
 /**
  * The [SEP-2133] extension identifier: the key of the capability object in the `extensions` member of
@@ -40,6 +41,7 @@ export const SESSION_ID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89
 export const DATETIME_PATTERN = String.raw`^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$`;
 export const CHAIN_HASH_PATTERN = '^[0-9a-f]{64}$';
 export const CONTEXT_HASH_PATTERN = '^sha256:[0-9a-f]{64}$';
+
 // base64url without padding, as JWS writes a signature (§5.1).
 export const SIGNATURE_PATTERN = '^[A-Za-z0-9_-]+$';
 // The signature pattern of events sealed before v0.3, which were standard base64.
@@ -53,6 +55,7 @@ const earlierUuidRegex =
 const datetimeRegex = new RegExp(DATETIME_PATTERN);
 const chainHashRegex = new RegExp(CHAIN_HASH_PATTERN);
 const contextHashRegex = new RegExp(CONTEXT_HASH_PATTERN);
+const saltedHashRegex = new RegExp(SALTED_HASH_PATTERN);
 const signatureRegex = new RegExp(SIGNATURE_PATTERN);
 const earlierSignatureRegex = new RegExp(EARLIER_SIGNATURE_PATTERN);
 
@@ -161,6 +164,7 @@ export const auditEventSchema = z
     // The audit session the host issued for the parent tools/call (§6.3), hashed and signed.
     session_id: z.string().regex(sessionIdRegex),
     ...auditEventFields,
+    action_context_salted_hash: z.string().regex(saltedHashRegex).optional(),
   })
   .refine((event) => event.outcome !== Outcome.ABORTED || event.reason !== undefined, {
     message: 'an aborted outcome requires a reason',
@@ -178,11 +182,12 @@ export const KNOWN_SPEC_VERSIONS = [
   'auditable-mcp/0.1.1',
   'auditable-mcp/0.2',
   'auditable-mcp/0.3',
+  'auditable-mcp/0.4',
 ] as const;
 
 const EARLIER_SPEC_VERSIONS = KNOWN_SPEC_VERSIONS.slice(0, -1) as [string, ...string[]];
 
-/** True for a published `spec_version` before v0.3, whose records a verifier reads in their own shape (§11.4). */
+/** True for a published `spec_version` before the current one, whose records a verifier reads in their own shape (§11.4). */
 export function isEarlierSpecVersion(version: unknown): boolean {
   return typeof version === 'string' && (EARLIER_SPEC_VERSIONS as readonly string[]).includes(version);
 }
@@ -230,10 +235,24 @@ function version011Or02EventSchema(version: 'auditable-mcp/0.1.1' | 'auditable-m
     });
 }
 
+// The 0.3 view: the current shape without `action_context_salted_hash`, which 0.4 added (§4.3).
+const version03EventSchema = z
+  .strictObject({
+    spec_version: z.literal('auditable-mcp/0.3'),
+    session_id: z.string().regex(sessionIdRegex),
+    ...auditEventFields,
+  })
+  .refine((event) => event.outcome !== Outcome.ABORTED || event.reason !== undefined, {
+    message: 'an aborted outcome requires a reason',
+    path: ['reason'],
+  })
+  .refine(level2Together, LEVEL2_TOGETHER);
+
 const EARLIER_EVENT_SCHEMAS: Record<string, z.ZodType> = {
   'auditable-mcp/0.1': version01EventSchema,
   'auditable-mcp/0.1.1': version011Or02EventSchema('auditable-mcp/0.1.1'),
   'auditable-mcp/0.2': version011Or02EventSchema('auditable-mcp/0.2'),
+  'auditable-mcp/0.3': version03EventSchema,
 };
 
 /** An audit capability exchanged during negotiation: the version, level, and attempt mode (§6.1). */
