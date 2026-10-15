@@ -68,6 +68,25 @@ export interface AuditHostOptions {
 }
 
 /**
+ * What became of an outcome the host was handed (§7.2), as {@link AuditHost.recordOutcome} reports it.
+ * An outcome has no response on the wire (§6); a binding that acknowledges delivery - a transport of
+ * its own, not MCP's - reads this to decide whether the outcome reached the ledger.
+ *
+ * - `sealed`: sealed into the chain as its operation's terminal record, or as a refusal (§7.2).
+ * - `repeat`: byte-identical to an outcome already sealed; nothing more to do (§8.3).
+ * - `refused`: not sealed, and recorded in the anomaly set under the kind for its condition (§6).
+ * - `not-recorded`: not sealed and not decided, because the chain tail is in doubt or persistence
+ *   failed (§10.8). Sending it again is safe.
+ */
+export const OutcomeDisposition = {
+  SEALED: 'sealed',
+  REPEAT: 'repeat',
+  REFUSED: 'refused',
+  NOT_RECORDED: 'not-recorded',
+} as const;
+export type OutcomeDisposition = (typeof OutcomeDisposition)[keyof typeof OutcomeDisposition];
+
+/**
  * Countersigns a record this host sealed (§5.2, §7.1).
  *
  * `sign` is async for the same reason `EventSigner.sign` is: a production host signs through a
@@ -107,6 +126,31 @@ interface Session {
   readonly received: Map<string, number>;
   readonly accepted: Set<string>;
   readonly terminal: Map<string, string>;
+}
+
+/** A session's state rebuilt from the records sealed in it, for a session that outlives a restart. */
+function restoredSession(sessionId: string, records: readonly SealedRecord[]): Session {
+  const session: Session = { decided: new Map(), received: new Map(), accepted: new Set(), terminal: new Map() };
+  for (const record of records) {
+    const event = record.event;
+    if (event[fields.SESSION_ID] !== sessionId || event[fields.SPEC_VERSION] !== SPEC_VERSION) {
+      continue;
+    }
+    const keyId = event[fields.KEY_ID];
+    const signerSeq = event[fields.SIGNER_SEQ];
+    if (typeof keyId === 'string' && typeof signerSeq === 'number') {
+      const decided = session.decided.get(keyId) ?? new Set<number>();
+      decided.add(signerSeq);
+      session.decided.set(keyId, decided);
+      session.received.set(keyId, Math.max(session.received.get(keyId) ?? signerSeq, signerSeq));
+    }
+    if (event[fields.OUTCOME] === Outcome.ATTEMPTED) {
+      session.accepted.add(eventId(event));
+    } else {
+      session.terminal.set(eventId(event), digestOf(event));
+    }
+  }
+  return session;
 }
 
 function acceptOf(record: SealedRecord): AttemptResponse {
@@ -203,11 +247,18 @@ export class AuditHost implements AuditEndpoint {
    * of the same session and id after it is recorded `unresolved-attempt`, as closing its session would
    * have (§6.3), and its session is not open. Anomalies are held in memory only; an integrator who needs
    * them across restarts persists `anomalies()`.
+   *
+   * `openSessions` is for a host whose sessions are not a-MCP's calls - a binding that defines a session
+   * outliving the host process, as Auditable A2A does for a Task. Each session it names is restored as
+   * open from its sealed records: the attempts it accepted, the outcome sealed per operation, and per key
+   * the `signer_seq` values decided and the highest received (§7.4). Its unresolved attempts are not
+   * flagged, since its session has not ended. Decisions the host reached without sealing - a refused
+   * attempt - are not in the ledger and are not restored. Omitted, `resume` ends every session (§6.3).
    */
   static async resume(
     partition: string,
     capability: AuditCapabilityInput = {},
-    options: AuditHostOptions & { repository: LedgerRepository },
+    options: AuditHostOptions & { repository: LedgerRepository; openSessions?: Iterable<string> },
   ): Promise<AuditHost> {
     const host = new AuditHost(partition, capability, options);
     const records = await options.repository.readAll(partition);
@@ -219,17 +270,22 @@ export class AuditHost implements AuditEndpoint {
         host.#issued.add(sessionId);
       }
     }
-    host.#flagUnresolved(records);
+    const open = new Set(options.openSessions ?? []);
+    for (const sessionId of open) {
+      host.#issued.add(sessionId);
+      host.#sessions.set(sessionId, restoredSession(sessionId, records));
+    }
+    host.#flagUnresolved(records, open);
     return host;
   }
 
-  /** Record every persisted attempt left without a terminal outcome as unresolved (§6.3). */
-  #flagUnresolved(records: readonly SealedRecord[]): void {
+  /** Record every persisted attempt left without a terminal outcome as unresolved (§6.3), outside `open`. */
+  #flagUnresolved(records: readonly SealedRecord[], open: ReadonlySet<string>): void {
     const openAttempts = new Map<string, string>();
     for (const record of records) {
       const event = record.event;
       const sessionId = event[fields.SESSION_ID];
-      if (typeof sessionId !== 'string' || event[fields.SPEC_VERSION] !== SPEC_VERSION) {
+      if (typeof sessionId !== 'string' || event[fields.SPEC_VERSION] !== SPEC_VERSION || open.has(sessionId)) {
         continue;
       }
       const id = String(event[fields.ID]);
@@ -608,13 +664,23 @@ export class AuditHost implements AuditEndpoint {
    * Held under the same lock as `handleAttempt`: an outcome seals into the same chain (§8.3).
    */
   async handleOutcome(event: unknown, sessionId?: string): Promise<void> {
-    await this.#lock.run(async () => {
+    await this.recordOutcome(event, sessionId);
+  }
+
+  /**
+   * {@link AuditHost.handleOutcome}, reporting what became of the outcome (§7.2).
+   *
+   * For a binding that acknowledges an outcome's delivery, which MCP's do not: only `not-recorded`
+   * leaves the outcome undecided, so only it calls for the outcome to be sent again.
+   */
+  async recordOutcome(event: unknown, sessionId?: string): Promise<OutcomeDisposition> {
+    return this.#lock.run(async () => {
       if (event === null || typeof event !== 'object') {
         this.#flag('<unknown>', reasons.SCHEMA_INVALID, 'an event must be a JSON object (§4)');
-        return;
+        return OutcomeDisposition.REFUSED;
       }
       // An array reaches `#admit` and fails the event schema there.
-      await this.#handleOutcome(event as Record<string, unknown>, sessionId);
+      return this.#handleOutcome(event as Record<string, unknown>, sessionId);
     });
   }
 
@@ -623,35 +689,35 @@ export class AuditHost implements AuditEndpoint {
    * sequence - and only then correlation. Each drop is recorded under the anomaly kind for its condition
    * (§6).
    */
-  async #handleOutcome(event: Record<string, unknown>, expected: string | undefined): Promise<void> {
+  async #handleOutcome(event: Record<string, unknown>, expected: string | undefined): Promise<OutcomeDisposition> {
     if (!(await this.#chainKnown())) {
       console.error(`auditable-mcp: outcome id=${eventId(event)} not recorded; the chain tail is in doubt (§10.8)`);
-      return;
+      return OutcomeDisposition.NOT_RECORDED;
     }
     const admitted = this.#admit(event, expected, false);
     if (typeof admitted === 'string') {
-      return;
+      return OutcomeDisposition.REFUSED;
     }
     const session = admitted;
     const id = eventId(event);
     const outcome = event[fields.OUTCOME];
     if ((await this.#verifySignature(event, session)) !== null) {
-      return;
+      return OutcomeDisposition.REFUSED;
     }
     // One terminal record per (session_id, id): a byte-identical repeat is not processed further (§8.3),
     // and one that differs is a replay (§7.2).
     const digest = digestOf(event);
     const terminal = session.terminal.get(id);
     if (this.#sealedDigests.has(digest) || terminal === digest) {
-      return;
+      return OutcomeDisposition.REPEAT;
     }
     if (terminal !== undefined) {
       this.#decide(event, session);
       this.#flag(id, reasons.REPLAY_DETECTED, 'differs from the outcome already sealed for this operation');
-      return;
+      return OutcomeDisposition.REFUSED;
     }
     if (this.#checkReplay(event, session) !== null) {
-      return;
+      return OutcomeDisposition.REFUSED;
     }
     const correlated = session.accepted.has(id);
     // §7.2: a success or failed outcome with no accepted attempt is not sealed. Both never-accepted and
@@ -660,7 +726,7 @@ export class AuditHost implements AuditEndpoint {
       this.#decide(event, session);
       const sub = this.#rejectedIds.has(id) ? 'for a rejected id' : 'without an accepted attempt';
       this.#flag(id, reasons.ORPHANED_OUTCOME, `outcome=${String(outcome)} ${sub}`);
-      return;
+      return OutcomeDisposition.REFUSED;
     }
     // A correlated outcome is its operation's terminal record; an aborted outcome of an attempt the host
     // did not accept is the record of an operation the tool declined to perform (§7.2, §10.4).
@@ -671,9 +737,10 @@ export class AuditHost implements AuditEndpoint {
       // (§7.6): log it rather than flag the anomaly set with an out-of-space code.
       // Failing to record is not a decision, as `unavailable` is not for an attempt (§7.4).
       console.error(`auditable-mcp: could not persist outcome id=${id}; outcome lost (completeness gap, §10.8)`);
-      return;
+      return OutcomeDisposition.NOT_RECORDED;
     }
     this.#decide(event, session);
     session.terminal.set(id, digest);
+    return OutcomeDisposition.SEALED;
   }
 }

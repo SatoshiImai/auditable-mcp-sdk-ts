@@ -40,6 +40,7 @@ export {
   type AuditHostOptions,
   type Countersigner,
   type IntegrityAnomaly,
+  OutcomeDisposition,
   type SignatureVerifier,
 } from './host';
 export { InProcessTransport } from './in-process';
