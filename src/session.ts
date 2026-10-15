@@ -83,7 +83,24 @@ export function newSessionId(): string {
  */
 export class SessionNumbering {
   readonly #lock = new Mutex();
-  #next = 0;
+  #next: number;
+
+  /**
+   * Start the session's sequence at `start`, 0 for a session that is new (§7.4).
+   *
+   * A session begins at 0. A binding whose session outlives the tool's process - Auditable A2A, where a
+   * session lasts as long as a Task - resumes it at the value after the last one the tool used, which
+   * only the tool's own records can tell it; starting again at 0 would reuse values the host has decided,
+   * which it refuses as `replay-detected` (§7.4).
+   *
+   * @throws {Error} `start` is not a non-negative integer.
+   */
+  constructor(start = 0) {
+    if (!Number.isSafeInteger(start) || start < 0) {
+      throw new Error(`a session numbering starts at a non-negative integer, not ${String(start)} (§7.4)`);
+    }
+    this.#next = start;
+  }
 
   /** The `signer_seq` the next emitted event takes. */
   get next(): number {

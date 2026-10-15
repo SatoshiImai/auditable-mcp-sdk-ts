@@ -6,15 +6,19 @@
 
 import { describe, expect, it } from 'vitest';
 import { AuditHost, OutcomeDisposition } from '../src/host';
+import { InProcessTransport } from '../src/in-process';
+import { AmcpSession, SessionNumbering } from '../src/session';
 import { InMemoryLedgerRepository } from '../src/storage';
 import {
   eventIdAt,
   FailingRepository,
+  FixedDeps,
   L2_CAPABILITY,
   MonotonicClock,
   makeAttempt,
   OkVerifier,
   SESSION,
+  StubSigner,
   signed,
 } from './helpers';
 
@@ -122,5 +126,28 @@ describe('AuditHost.resume with openSessions', () => {
     const host = await resume(repo);
     expect(host.anomalies().map((anomaly) => anomaly.kind)).toEqual(['unresolved-attempt']);
     expect((await host.handleAttempt(signed(makeAttempt(eventIdAt(3)), 3))).status).toBe('reject');
+  });
+});
+
+describe('SessionNumbering resumes a session at a given value (§7.4)', () => {
+  it('numbers the next signed event from the start it was given', async () => {
+    const host = new AuditHost('tenant-a', L2_CAPABILITY, { clock: new MonotonicClock(), verifier: new OkVerifier() });
+    host.openSession(SESSION);
+    const transport = Object.assign(new InProcessTransport(host), { numbering: new SessionNumbering(3) });
+    const session = new AmcpSession(transport, SESSION, { signer: new StubSigner(), deps: new FixedDeps() });
+    await (async () => {
+      await using action = await session.action(
+        'db.read',
+        { kind: 'table', ref: 'customers' },
+        { mutates: false, egress: false },
+      );
+      action.succeeded();
+    })();
+    expect(host.records().map((record) => record.event.signer_seq)).toEqual([3, 4]);
+  });
+
+  it('refuses a start that is not a non-negative integer', () => {
+    expect(() => new SessionNumbering(-1)).toThrow(/§7.4/);
+    expect(() => new SessionNumbering(1.5)).toThrow(/§7.4/);
   });
 });
