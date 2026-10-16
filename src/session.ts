@@ -177,7 +177,7 @@ export interface CountersignatureVerifier {
   /**
    * Return true if the signature verifies against the registered host key, false if it does not. Return
    * `'unavailable'` when it could not be checked for a reason that is not the signature's - the host's key set
-   * could not be fetched - which the tool reads as a failure to record (§6), not as a failed countersignature.
+   * could not be fetched - which the tool reads as a failure to record (§7.2), not as a failed countersignature.
    */
   verify(hostKeyId: string, signature: string, payload: Uint8Array): Promise<boolean | 'unavailable'>;
 }
