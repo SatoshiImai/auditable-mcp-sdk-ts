@@ -169,6 +169,23 @@ describe('the tool side of the countersign (§7.2)', () => {
     );
   });
 
+  it('aborts host-unavailable when the verifier could not check the countersignature', async () => {
+    const { host } = signingHost();
+    const unchecked = { verify: async () => 'unavailable' as const };
+    const session = new AmcpSession(new InProcessTransport(host), SESSION, {
+      deps: new FixedDeps(),
+      countersignatureVerifier: unchecked,
+      requireCountersign: true,
+    });
+    const error = await runOne(session).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AmcpAbortedError);
+    expect((error as AmcpAbortedError).reason).toBe('host-unavailable');
+    expect(host.records().map((record) => [record.event.outcome, record.event.reason])).toEqual([
+      ['attempted', undefined],
+      ['aborted', 'host-unavailable'],
+    ]);
+  });
+
   it('aborts host-uncountersigned when a required countersign is absent', async () => {
     const key = generateToolKey(HOST_KEY_ID);
     const endpoint = new CannedEndpoint(canned());

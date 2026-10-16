@@ -86,6 +86,18 @@ const samples: [string, Record<string, unknown>, boolean][] = [
   ['ts-offset-not-z', { ...validBase, ts: '2026-07-15T00:00:01+09:00' }, false],
   ['ach-bad', { ...validBase, action_context_hash: 'sha256:XYZ' }, false],
   ['ach-valid', { ...validBase, action_context_hash: `sha256:${'a'.repeat(64)}` }, true],
+  [
+    'salted-hash-valid',
+    { ...validBase, action_context_salted_hash: 'JXkhjdB2aytlBM4xi-ESu61_KmG5g3fY0iCjcL1u-K0' },
+    true,
+  ],
+  ['salted-hash-short', { ...validBase, action_context_salted_hash: 'JXkhjdB2' }, false],
+  [
+    'salted-hash-padded',
+    { ...validBase, action_context_salted_hash: 'JXkhjdB2aytlBM4xi-ESu61_KmG5g3fY0iCjcL1u-K0=' },
+    false,
+  ],
+  ['salted-hash-prefixed', { ...validBase, action_context_salted_hash: `sha256:${'a'.repeat(64)}` }, false],
   ['signer-seq-negative', { ...validBase, signer_seq: -1 }, false],
   ['signer-seq-too-large', { ...validBase, signer_seq: 2 ** 53 }, false],
   ['empty-key-id', { ...fullValid, key_id: '' }, false],

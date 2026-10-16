@@ -4,6 +4,7 @@ import {
   auditCapabilitySchema,
   auditEventSchema,
   Countersign,
+  firstSealedValidationError,
   firstValidationError,
   Level,
   Outcome,
@@ -51,6 +52,37 @@ describe('auditEventSchema forbids silent coercion and unknown keys', () => {
     const message = firstValidationError({ ...base, outcome: 'weird' });
     expect(message).not.toBeNull();
     expect(message).toContain('outcome');
+  });
+});
+
+describe('a timestamp carries seconds (RFC 3339 date-time, §4, §7.1)', () => {
+  const withoutSeconds = '2026-07-15T00:00Z';
+
+  it('rejects a current-version ts without seconds', () => {
+    expect(auditEventSchema.safeParse({ ...base, ts: withoutSeconds }).success).toBe(false);
+    expect(firstSealedValidationError({ ...base, ts: withoutSeconds })).toMatch(/^ts: /);
+  });
+
+  it('rejects an accept whose host_ts has no seconds', () => {
+    const accept = {
+      status: Status.ACCEPT,
+      seq: 0,
+      record_hash: '0'.repeat(64),
+      host_ts: withoutSeconds,
+      previous_hash: '0'.repeat(64),
+    };
+    expect(attemptResponseSchema.safeParse(accept).success).toBe(false);
+  });
+
+  it('still reads a record sealed under an earlier version without seconds, whose pattern allowed it', () => {
+    expect(firstSealedValidationError({ ...base, spec_version: 'auditable-mcp/0.3', ts: withoutSeconds })).toBeNull();
+    const { session_id: _session, ...v02 } = base;
+    expect(
+      firstSealedValidationError({ ...v02, spec_version: 'auditable-mcp/0.2', call_id: 'call-1', ts: withoutSeconds }),
+    ).toBeNull();
+    expect(
+      firstSealedValidationError({ ...v02, spec_version: 'auditable-mcp/0.1', call_id: 'call-1', ts: withoutSeconds }),
+    ).toBeNull();
   });
 });
 
@@ -127,6 +159,6 @@ describe('Outcome / Level / Status values equal the wire strings', () => {
     expect(Outcome.ATTEMPTED).toBe('attempted');
     expect(Level.L2).toBe('L2');
     expect(Status.ACCEPT).toBe('accept');
-    expect(SPEC_VERSION).toBe('auditable-mcp/0.3');
+    expect(SPEC_VERSION).toBe('auditable-mcp/0.4');
   });
 });

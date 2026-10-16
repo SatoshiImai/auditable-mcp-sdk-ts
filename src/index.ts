@@ -6,7 +6,7 @@
  * `node:crypto` engine) live in `auditable-mcp-sdk/node`; the default L2 crypto engine is the
  * universal noble engine, also exported from `auditable-mcp-sdk/noble`.
  *
- * The `spec_version` implemented is `auditable-mcp/0.3`.
+ * The `spec_version` implemented is `auditable-mcp/0.4`.
  */
 
 export {
@@ -40,7 +40,10 @@ export {
   type AuditHostOptions,
   type Countersigner,
   type IntegrityAnomaly,
+  type OpenSession,
+  OutcomeDisposition,
   type SignatureVerifier,
+  type SignerTracker,
 } from './host';
 export { InProcessTransport } from './in-process';
 export {
@@ -138,4 +141,5 @@ export {
 } from './verify';
 export { type AuditSpec, withAudit } from './with-audit';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
+export { disclosureOf, newSalt, openSaltedHash, SALTED_HASH_PATTERN, saltedHashOf } from './salted-hash';

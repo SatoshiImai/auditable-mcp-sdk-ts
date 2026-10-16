@@ -1,7 +1,7 @@
 {
   "name": "auditable-mcp-sdk",
-  "version": "0.3.0",
-  "description": "Auditable MCP SDK — a protocol machine for tool self-attestation into a tamper-evident host ledger (auditable-mcp/0.3).",
+  "version": "0.4.0",
+  "description": "Auditable MCP SDK — a protocol machine for tool self-attestation into a tamper-evident host ledger (auditable-mcp/0.4).",
   "type": "module",
   "license": "MIT",
   "author": "Satoshi Imai",

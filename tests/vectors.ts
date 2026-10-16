@@ -108,3 +108,12 @@ export interface VerifierCasesVector {
 }
 
 export const verifierCasesVector = load<VerifierCasesVector>('verifier-cases.json');
+
+export interface SaltedHashVector {
+  name: string;
+  disclosure: string;
+  decoded: [string, unknown];
+  salted_hash: string;
+}
+
+export const saltedHashVectors = load<SaltedHashVector[]>('salted-hash.json');

@@ -20,6 +20,7 @@ export const OUTCOME = 'outcome';
 export const REASON = 'reason';
 export const ACTION_CONTEXT = 'action_context';
 export const ACTION_CONTEXT_HASH = 'action_context_hash';
+export const ACTION_CONTEXT_SALTED_HASH = 'action_context_salted_hash';
 export const SIGNER_SEQ = 'signer_seq';
 export const KEY_ID = 'key_id';
 export const SIGNATURE = 'signature';
