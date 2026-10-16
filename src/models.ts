@@ -37,8 +37,9 @@ export const EXTENSION_ID = 'com.timberlandchapel/auditable-mcp' as const;
 export const UUID_PATTERN =
   '^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|00000000-0000-0000-0000-000000000000)$';
 export const SESSION_ID_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-// String.raw keeps the `\d` classes readable, matching the schema's escaped source one-to-one.
-export const DATETIME_PATTERN = String.raw`^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$`;
+// String.raw keeps the `\d` classes readable, matching the schema's escaped source one-to-one. An RFC 3339
+// date-time in UTC with a `Z` suffix, seconds required (§4, §7.1).
+export const DATETIME_PATTERN = String.raw`^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?Z$`;
 export const CHAIN_HASH_PATTERN = '^[0-9a-f]{64}$';
 export const CONTEXT_HASH_PATTERN = '^sha256:[0-9a-f]{64}$';
 
@@ -46,6 +47,8 @@ export const CONTEXT_HASH_PATTERN = '^sha256:[0-9a-f]{64}$';
 export const SIGNATURE_PATTERN = '^[A-Za-z0-9_-]+$';
 // The signature pattern of events sealed before v0.3, which were standard base64.
 const EARLIER_SIGNATURE_PATTERN = '^[A-Za-z0-9+/]+={0,2}$';
+// The timestamp pattern of events sealed before v0.4, whose seconds were optional.
+const EARLIER_DATETIME_PATTERN = String.raw`^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$`;
 
 const uuidRegex = new RegExp(UUID_PATTERN);
 const sessionIdRegex = new RegExp(SESSION_ID_PATTERN);
@@ -53,6 +56,7 @@ const sessionIdRegex = new RegExp(SESSION_ID_PATTERN);
 const earlierUuidRegex =
   /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000)$/;
 const datetimeRegex = new RegExp(DATETIME_PATTERN);
+const earlierDatetimeRegex = new RegExp(EARLIER_DATETIME_PATTERN);
 const chainHashRegex = new RegExp(CHAIN_HASH_PATTERN);
 const contextHashRegex = new RegExp(CONTEXT_HASH_PATTERN);
 const saltedHashRegex = new RegExp(SALTED_HASH_PATTERN);
@@ -129,11 +133,10 @@ export type TargetResource = z.infer<typeof targetResourceSchema>;
  * both levels; the signing layer populates them. `reason` is pinned to the Tier-1 abort codes and is
  * required exactly when `outcome` is `aborted` (§7.6, §7.2).
  */
-// Shared event fields; `spec_version` and the call's name are added per schema below. Field order does
+// Shared event fields; `spec_version`, the call's name, and `ts` are added per schema below. Field order does
 // not affect validation or canonicalization (hashing uses the raw event, not the parsed object).
 const auditEventFields = {
   id: z.string().regex(uuidRegex),
-  ts: z.string().regex(datetimeRegex),
   traceparent: z.string().optional(),
   action_type: z.string().min(1),
   mutates: z.boolean(),
@@ -163,6 +166,7 @@ export const auditEventSchema = z
     spec_version: z.literal(SPEC_VERSION),
     // The audit session the host issued for the parent tools/call (§6.3), hashed and signed.
     session_id: z.string().regex(sessionIdRegex),
+    ts: z.string().regex(datetimeRegex),
     ...auditEventFields,
     action_context_salted_hash: z.string().regex(saltedHashRegex).optional(),
   })
@@ -198,7 +202,7 @@ export function isEarlierSpecVersion(version: unknown): boolean {
 // bytes are immutable evidence, so a verifier reads each in the shape it was sealed in (§11.4).
 const earlierSharedFields = {
   id: z.string().regex(earlierUuidRegex),
-  ts: z.string().regex(datetimeRegex),
+  ts: z.string().regex(earlierDatetimeRegex),
   call_id: z.string().min(1),
   traceparent: z.string().optional(),
   action_type: z.string().min(1),
@@ -235,11 +239,13 @@ function version011Or02EventSchema(version: 'auditable-mcp/0.1.1' | 'auditable-m
     });
 }
 
-// The 0.3 view: the current shape without `action_context_salted_hash`, which 0.4 added (§4.3).
+// The 0.3 view: the current shape without `action_context_salted_hash`, which 0.4 added (§4.3), and with
+// the timestamp pattern 0.4 tightened.
 const version03EventSchema = z
   .strictObject({
     spec_version: z.literal('auditable-mcp/0.3'),
     session_id: z.string().regex(sessionIdRegex),
+    ts: z.string().regex(earlierDatetimeRegex),
     ...auditEventFields,
   })
   .refine((event) => event.outcome !== Outcome.ABORTED || event.reason !== undefined, {
